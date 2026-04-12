@@ -1,0 +1,61 @@
+# 01_quick_start — Multi-Agent with Delegate Orchestration
+#
+# A delegate orchestration where a coordinator delegates to a researcher and a writer.
+# Shows how strands-compose features compose when served via the dev CLI.
+#
+# Run:
+#   sca dev --config examples/01_quick_start/config.yaml
+
+models:
+  default:
+    provider: bedrock
+    model_id: openai.gpt-oss-20b-1:0
+
+agents:
+  researcher:
+    model: default
+    description: "Research a topic and return structured facts."
+    system_prompt: |
+      You are a research analyst.
+      Given a topic:
+        1. Produce a structured briefing with 3-5 key facts.
+        2. Include a one-paragraph summary at the end.
+      Be factual and concise.
+
+  writer:
+    model: default
+    description: "Write a polished, well-structured report from provided facts."
+    system_prompt: |
+      You are a technical writer. Given research material, produce a clear report:
+        - An informative title
+        - An executive summary (2-3 sentences)
+        - Well-structured body with headings
+        - A brief conclusion
+      Write in a professional but accessible tone.
+
+  coordinator:
+    model: default
+    system_prompt: |
+      You coordinate a research and writing pipeline.
+      Analyze first if you have the necessary information to complete the task.
+      Ask for clarification if needed.
+      Study the task and determine if you can do it on your own or if you need to delegate.
+      For every task that you cannot complete on your own:
+         1. Call researcher to gather facts on the topic.
+         2. Pass the facts to writer to produce the final report.
+         3. Return the writer's output as your response.
+      Do not write content yourself — delegate all work.
+      If you have the necessary information to complete the task on your own, do so and return
+
+
+orchestrations:
+  main:
+    mode: delegate
+    entry_name: coordinator
+    connections:
+      - agent: researcher
+        description: "Research a topic using analysis tools and return structured facts."
+      - agent: writer
+        description: "Write a polished report from the provided research material."
+
+entry: main

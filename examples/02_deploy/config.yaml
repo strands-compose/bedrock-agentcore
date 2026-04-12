@@ -1,0 +1,21 @@
+# strands-compose config — minimal single-agent setup for deployment
+#
+# Docs: https://github.com/strands-compose/sdk-python
+#
+# Local dev:
+#   sca dev --config examples/02_deploy/config.yaml
+#
+# Deploy:
+#   agentcore deploy -y
+
+models:
+  default:
+    provider: bedrock
+    model_id: openai.gpt-oss-20b-1:0
+
+agents:
+  assistant:
+    model: default
+    system_prompt: "You are a helpful assistant. Keep answers clear and concise."
+
+entry: assistant

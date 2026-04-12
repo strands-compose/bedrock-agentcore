@@ -1,0 +1,117 @@
+[project]
+name = "strands-compose-agentcore"
+version = "0.1.0"
+description = "BedrockAgentCore deployment adapter for strands-compose"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [
+    { name = "Michal Galuszka", email = "michal.galuszka1@gmail.com" },
+]
+keywords = ["agents", "agentcore", "bedrock", "strands", "strands-compose", "deployment"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+dependencies = [
+    "strands-compose>=0.2.0,<1.0.0",
+    "bedrock-agentcore>=1.6.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/strands-compose/bedrock-agentcore"
+Repository = "https://github.com/strands-compose/bedrock-agentcore"
+"Bug Tracker" = "https://github.com/strands-compose/bedrock-agentcore/issues"
+Documentation = "https://github.com/strands-compose/bedrock-agentcore/tree/main/docs"
+Changelog = "https://github.com/strands-compose/bedrock-agentcore/blob/main/CHANGELOG.md"
+
+[project.scripts]
+sca = "strands_compose_agentcore.cli:main"
+strands-compose-agentcore = "strands_compose_agentcore.cli:main"
+
+[dependency-groups]
+dev = [
+    "bandit>=1.9.4",
+    "coverage>=7.13.5",
+    "pytest-asyncio>=1.3.0",
+    "pytest-cov>=7.1.0",
+    "pytest-mock>=3.15.1",
+    "pytest-xdist>=3.8.0",
+    "pytest>=9.0.3",
+    "ruff>=0.15.10",
+    "rust-just>=1.49.0",
+    "ty>=0.0.29",
+    "commitizen>=4.13.10",
+    "pre-commit>=4.5.1",
+    "starlette>=1.0.0",
+]
+
+[tool.uv]
+# TEMPORARY: pin botocore to avoid import issue with s3transfer
+# GitHub issue: https://github.com/boto/s3transfer/issues/376
+# botocore 1.42.88 removed botocore.compat.six which s3transfer 0.16.0 still imports
+# pin until fixed upstream
+constraint-dependencies = ["botocore<1.42.88"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/strands_compose_agentcore"]
+
+[tool.bandit]
+targets = ["src/strands_compose_agentcore"]
+
+[tool.bandit.assert_used]
+skips = ['*_test.py', '*/test_*.py']
+
+[tool.coverage.run]
+branch = true
+source = ["src/strands_compose_agentcore"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+norecursedirs = ["__pycache__"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+markers = [
+    "integration: Integration tests (full pipeline)",
+]
+asyncio_mode = "auto"
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+version_provider = "pep621"
+version_files = [
+    "pyproject.toml:^version",
+]
+tag_format = "v$version"
+update_changelog_on_bump = true
+changelog_file = "CHANGELOG.md"
+changelog_incremental = true
+major_version_zero = true
+
+[tool.ruff]
+fix = true
+indent-width = 4
+line-length = 100
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["D100", "D101", "D102", "D103", "ANN", "S101"]
+"examples/**/*.py" = ["D100", "D103", "D104", "ANN", "INP001", "T201"]
