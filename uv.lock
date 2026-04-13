@@ -2,9 +2,6 @@ version = 1
 revision = 3
 requires-python = ">=3.11"
 
-[manifest]
-constraints = [{ name = "botocore", specifier = "<1.42.88" }]
-
 [[package]]
 name = "annotated-types"
 version = "0.7.0"
@@ -1571,6 +1568,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "bedrock-agentcore" },
+    { name = "botocore" },
     { name = "strands-compose" },
 ]
 
@@ -1594,6 +1592,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "bedrock-agentcore", specifier = ">=1.6.1" },
+    { name = "botocore", specifier = "<1.42.88" },
     { name = "strands-compose", specifier = ">=0.2.0,<1.0.0" },
 ]
 
