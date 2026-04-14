@@ -27,7 +27,7 @@ dependencies = [
     # GitHub issue: https://github.com/boto/s3transfer/issues/376
     # botocore 1.42.88 removed botocore.compat.six which s3transfer 0.16.0 still imports
     # pin until fixed upstream
-    "botocore<1.42.88",
+    "botocore<1.42.90",
 ]
 
 [project.urls]
