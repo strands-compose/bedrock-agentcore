@@ -81,6 +81,24 @@ The module-level `app` variable is what AgentCore Runtime discovers at deploy ti
 - `Research the history of Python and write a report`
 - `Give me a briefing on large language models`
 
+## Sending images and documents
+
+Once the server is running, you can use the `media` builders to send multimodal content:
+
+```python
+from strands_compose_agentcore import LocalClient, document, image, text
+
+agent_input = [
+    image("cat.png"),
+    document("report.pdf"),
+    text("Describe the image and summarise the document.")
+]
+for event in LocalClient().invoke(agent_input):
+    print(event.type, event.data)
+```
+
+See [03_multimodal](../03_multimodal/README.md) for a full end-to-end demo.
+
 ## Next
 
 Ready to deploy? See [02_deploy](../02_deploy/README.md) for the full deployment walkthrough — including `pyproject.toml` and the `agentcore` CLI.
