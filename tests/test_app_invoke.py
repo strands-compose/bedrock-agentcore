@@ -302,3 +302,126 @@ class TestInvokeSessionIdValidation:
         assert len(results) == 1
         assert results[0]["type"] == "error"
         assert "too long" in results[0]["data"]["message"]
+
+
+class TestInvokeMultimodalPayload:
+    @pytest.mark.asyncio
+    async def test_rejects_when_no_primary_key(self) -> None:
+        app = create_app(make_app_config(), make_infra())
+        invoke = app.handlers["main"]
+
+        app.state.app_config = make_app_config()
+        app.state.infra = make_infra()
+        app.state.session = None
+        app.state.session_id = None
+
+        with patch(f"{_MOD_APP}.BedrockAgentCoreContext.get_session_id", return_value=_VALID_SID):
+            results = [item async for item in invoke({})]
+
+        assert len(results) == 1
+        assert results[0]["type"] == "error"
+        assert "prompt" in results[0]["data"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_content_input_forwarded_as_list(self) -> None:
+        app = create_app(make_app_config(), make_infra())
+        invoke = app.handlers["main"]
+
+        resolved = make_resolved_config()
+        events = MagicMock(spec=EventQueue)
+        app.state.app_config = make_app_config()
+        app.state.infra = make_infra()
+        app.state.session = SessionState(resolved=resolved, events=events)
+        app.state.session_id = _VALID_SID
+
+        captured: dict[str, object] = {}
+
+        async def _capture(r, e, agent_input, **kwargs):
+            captured["agent_input"] = agent_input
+            return
+            yield  # pragma: no cover
+
+        with (
+            patch(f"{_MOD_APP}.BedrockAgentCoreContext.get_session_id", return_value=_VALID_SID),
+            patch(f"{_MOD_APP}.stream_invocation", side_effect=_capture),
+        ):
+            _ = [item async for item in invoke({"prompt": [{"text": "hello"}, {"text": "world"}]})]
+
+        assert isinstance(captured["agent_input"], list)
+        assert captured["agent_input"] == [{"text": "hello"}, {"text": "world"}]
+
+    @pytest.mark.asyncio
+    async def test_messages_input_rejected(self) -> None:
+        app = create_app(make_app_config(), make_infra())
+        invoke = app.handlers["main"]
+
+        resolved = make_resolved_config()
+        events = MagicMock(spec=EventQueue)
+        app.state.app_config = make_app_config()
+        app.state.infra = make_infra()
+        app.state.session = SessionState(resolved=resolved, events=events)
+        app.state.session_id = _VALID_SID
+
+        msgs = [{"role": "user", "content": [{"text": "hi"}]}]
+        with (
+            patch(f"{_MOD_APP}.BedrockAgentCoreContext.get_session_id", return_value=_VALID_SID),
+            patch(f"{_MOD_APP}.stream_invocation") as mock_stream,
+        ):
+            results = [item async for item in invoke({"messages": msgs})]
+
+        mock_stream.assert_not_called()
+        assert results[0]["type"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_payload_too_large_yields_structured_error(self) -> None:
+        app = create_app(
+            make_app_config(),
+            make_infra(),
+            max_payload_bytes=10,
+        )
+        invoke = app.handlers["main"]
+        app.state.app_config = make_app_config()
+        app.state.infra = make_infra()
+        app.state.session = None
+        app.state.session_id = None
+
+        with patch(f"{_MOD_APP}.BedrockAgentCoreContext.get_session_id", return_value=_VALID_SID):
+            results = [item async for item in invoke({"prompt": "x" * 200})]
+
+        assert len(results) == 1
+        assert results[0]["type"] == "error"
+        assert "max_payload_bytes" in results[0]["data"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_reply_content_forwarded_as_interrupt_response(self) -> None:
+        app = create_app(make_app_config(), make_infra())
+        invoke = app.handlers["main"]
+
+        resolved = make_resolved_config()
+        events = MagicMock(spec=EventQueue)
+        app.state.app_config = make_app_config()
+        app.state.infra = make_infra()
+        app.state.session = SessionState(resolved=resolved, events=events)
+        app.state.session_id = _VALID_SID
+
+        captured: dict[str, object] = {}
+
+        async def _capture(r, e, agent_input, **kwargs):
+            captured["agent_input"] = agent_input
+            return
+            yield  # pragma: no cover
+
+        with (
+            patch(f"{_MOD_APP}.BedrockAgentCoreContext.get_session_id", return_value=_VALID_SID),
+            patch(f"{_MOD_APP}.stream_invocation", side_effect=_capture),
+        ):
+            _ = [
+                item
+                async for item in invoke(
+                    {"prompt": [{"reply": {"interrupt_id": "iid", "response": "yes"}}]}
+                )
+            ]
+
+        assert captured["agent_input"] == [
+            {"interruptResponse": {"interruptId": "iid", "response": "yes"}}
+        ]

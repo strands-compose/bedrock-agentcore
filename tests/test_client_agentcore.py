@@ -10,15 +10,14 @@ import pytest
 from botocore.exceptions import ClientError
 from strands_compose import StreamEvent
 
-from strands_compose_agentcore.client.agentcore import (
-    _STREAM_DONE,
-    AgentCoreClient,
-)
-from strands_compose_agentcore.client.utils import (
+from strands_compose_agentcore.client.agentcore import AgentCoreClient
+from strands_compose_agentcore.client.utils import translate_error
+from strands_compose_agentcore.media import image, text
+from strands_compose_agentcore.types import (
     AccessDeniedError,
     AgentCoreClientError,
+    ContentBlock,
     ThrottledError,
-    translate_error,
 )
 
 _TEST_ARN = "arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/test-agent"
@@ -111,7 +110,7 @@ class TestInvokeSync:
         mock_api = client._client.invoke_agent_runtime
         mock_api.return_value = {"response": MagicMock(), "statusCode": 200}
 
-        client._invoke_sync("session-123", "Hello agent", None)
+        client._invoke_sync("session-123", {"prompt": "Hello agent"})
 
         mock_api.assert_called_once_with(
             agentRuntimeArn=_TEST_ARN,
@@ -121,20 +120,10 @@ class TestInvokeSync:
             runtimeSessionId="session-123",
         )
 
-    def test_invoke_sync_payload_extras(self, client: AgentCoreClient) -> None:
-        mock_api = client._client.invoke_agent_runtime
-        mock_api.return_value = {"response": MagicMock(), "statusCode": 200}
-
-        client._invoke_sync("s", "Hi", {"media": {"type": "image"}})
-
-        call_kwargs = mock_api.call_args.kwargs
-        sent_payload = json.loads(call_kwargs["payload"])
-        assert sent_payload == {"prompt": "Hi", "media": {"type": "image"}}
-
     def test_invoke_sync_returns_response(self, client: AgentCoreClient) -> None:
         expected = {"response": MagicMock(), "statusCode": 200}
         client._client.invoke_agent_runtime.return_value = expected
-        result = client._invoke_sync("s", "Hi", None)
+        result = client._invoke_sync("s", {"prompt": "Hi"})
         assert result is expected
 
     def test_invoke_sync_translates_client_error(self, client: AgentCoreClient) -> None:
@@ -142,7 +131,7 @@ class TestInvokeSync:
             "ThrottlingException", "Rate exceeded"
         )
         with pytest.raises(ThrottledError, match="Rate exceeded"):
-            client._invoke_sync("s", "Hi", None)
+            client._invoke_sync("s", {"prompt": "Hi"})
 
 
 class TestInvoke:
@@ -156,7 +145,7 @@ class TestInvoke:
         body = _make_streaming_body(lines)
         client._client.invoke_agent_runtime.return_value = {"response": body}
 
-        events = [e async for e in client.invoke(session_id=_VALID_SESSION_ID, prompt="Hi")]
+        events = [e async for e in client.invoke("Hi", session_id=_VALID_SESSION_ID)]
 
         assert len(events) == 3
         assert events[0].type == "agent_start"
@@ -167,14 +156,14 @@ class TestInvoke:
     @pytest.mark.asyncio
     async def test_invoke_rejects_short_session_id(self, client: AgentCoreClient) -> None:
         with pytest.raises(ValueError, match="too short"):
-            async for _ in client.invoke(session_id="short", prompt="Hi"):
+            async for _ in client.invoke("Hi", session_id="short"):
                 pass  # pragma: no cover
 
     @pytest.mark.asyncio
     async def test_invoke_rejects_long_session_id(self, client: AgentCoreClient) -> None:
         long_id = "a" * 257
         with pytest.raises(ValueError, match="too long"):
-            async for _ in client.invoke(session_id=long_id, prompt="Hi"):
+            async for _ in client.invoke("Hi", session_id=long_id):
                 pass  # pragma: no cover
 
     @pytest.mark.asyncio
@@ -188,7 +177,7 @@ class TestInvoke:
         body = _make_streaming_body(lines)
         client._client.invoke_agent_runtime.return_value = {"response": body}
 
-        events = [e async for e in client.invoke(session_id=_VALID_SESSION_ID, prompt="Hi")]
+        events = [e async for e in client.invoke("Hi", session_id=_VALID_SESSION_ID)]
         assert len(events) == 1
         assert events[0].type == "token"
 
@@ -202,7 +191,7 @@ class TestInvoke:
         body = _make_streaming_body(lines)
         client._client.invoke_agent_runtime.return_value = {"response": body}
 
-        events = [e async for e in client.invoke(session_id=_VALID_SESSION_ID, prompt="Hi")]
+        events = [e async for e in client.invoke("Hi", session_id=_VALID_SESSION_ID)]
         assert len(events) == 1
 
     @pytest.mark.asyncio
@@ -214,7 +203,7 @@ class TestInvoke:
         body = _make_streaming_body([raw_line])
         client._client.invoke_agent_runtime.return_value = {"response": body}
 
-        events = [e async for e in client.invoke(session_id=_VALID_SESSION_ID, prompt="Hi")]
+        events = [e async for e in client.invoke("Hi", session_id=_VALID_SESSION_ID)]
         assert len(events) == 1
         assert events[0].data == {"text": "raw"}
 
@@ -224,40 +213,85 @@ class TestInvoke:
             "AccessDeniedException"
         )
         with pytest.raises(AccessDeniedError):
-            async for _ in client.invoke(session_id=_VALID_SESSION_ID, prompt="Hi"):
+            async for _ in client.invoke("Hi", session_id=_VALID_SESSION_ID):
                 pass
 
     @pytest.mark.asyncio
     async def test_invoke_throttling_raises_error(self, client: AgentCoreClient) -> None:
         client._client.invoke_agent_runtime.side_effect = _make_client_error("ThrottlingException")
         with pytest.raises(ThrottledError):
-            async for _ in client.invoke(session_id=_VALID_SESSION_ID, prompt="Hi"):
+            async for _ in client.invoke("Hi", session_id=_VALID_SESSION_ID):
                 pass
 
     @pytest.mark.asyncio
-    async def test_invoke_unexpected_error_wraps_in_base(self, client: AgentCoreClient) -> None:
+    async def test_invoke_unexpected_error_propagates(self, client: AgentCoreClient) -> None:
         client._client.invoke_agent_runtime.side_effect = RuntimeError("boom")
-        with pytest.raises(AgentCoreClientError, match="boom"):
-            async for _ in client.invoke(session_id=_VALID_SESSION_ID, prompt="Hi"):
+        with pytest.raises(RuntimeError, match="boom"):
+            async for _ in client.invoke("Hi", session_id=_VALID_SESSION_ID):
                 pass
 
     @pytest.mark.asyncio
-    async def test_invoke_payload_extras_forwarded(self, client: AgentCoreClient) -> None:
+    async def test_invoke_closes_stream_body_on_completion(self, client: AgentCoreClient) -> None:
         body = _make_streaming_body([_make_sse_line("complete", "a")])
         client._client.invoke_agent_runtime.return_value = {"response": body}
 
-        extras = {"media": {"type": "image", "data": "abc"}}
-        _ = [
-            e
-            async for e in client.invoke(
-                session_id=_VALID_SESSION_ID, prompt="Hi", payload_extras=extras
-            )
-        ]
+        _ = [e async for e in client.invoke("Hi", session_id=_VALID_SESSION_ID)]
 
-        call_kwargs = client._client.invoke_agent_runtime.call_args.kwargs
-        sent_payload = json.loads(call_kwargs["payload"])
-        assert sent_payload["media"] == {"type": "image", "data": "abc"}
-        assert sent_payload["prompt"] == "Hi"
+        body.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_invoke_closes_stream_body_when_generator_closed(
+        self, client: AgentCoreClient
+    ) -> None:
+        body = _make_streaming_body([_make_sse_line("token", "a"), _make_sse_line("complete", "a")])
+        client._client.invoke_agent_runtime.return_value = {"response": body}
+
+        stream = client.invoke("Hi", session_id=_VALID_SESSION_ID)
+        _ = await stream.__anext__()
+        await stream.aclose()
+
+        body.close.assert_called_once()
+
+
+class TestInvokeContentBody:
+    @pytest.mark.asyncio
+    async def test_invoke_with_content_sends_correct_body(self, client: AgentCoreClient) -> None:
+        body = _make_streaming_body([_make_sse_line("complete", "a")])
+        client._client.invoke_agent_runtime.return_value = {"response": body}
+
+        blocks: list[ContentBlock] = [text("hi"), image(b"data", format="png")]
+        _ = [e async for e in client.invoke(blocks, session_id=_VALID_SESSION_ID)]
+
+        sent = json.loads(client._client.invoke_agent_runtime.call_args.kwargs["payload"])
+        assert sent == {"prompt": blocks}
+
+    @pytest.mark.asyncio
+    async def test_invoke_with_single_block_sends_content_list(
+        self, client: AgentCoreClient
+    ) -> None:
+        body = _make_streaming_body([_make_sse_line("complete", "a")])
+        client._client.invoke_agent_runtime.return_value = {"response": body}
+
+        block = text("hi")
+        _ = [e async for e in client.invoke(block, session_id=_VALID_SESSION_ID)]
+
+        sent = json.loads(client._client.invoke_agent_runtime.call_args.kwargs["payload"])
+        assert sent == {"prompt": [block]}
+
+    @pytest.mark.asyncio
+    async def test_invoke_rejects_empty_list(self, client: AgentCoreClient) -> None:
+        with pytest.raises(ValueError, match="invalid agent_input"):
+            async for _ in client.invoke([], session_id=_VALID_SESSION_ID):
+                pass  # pragma: no cover
+
+    @pytest.mark.asyncio
+    async def test_invoke_rejects_wrong_type(self, client: AgentCoreClient) -> None:
+        with pytest.raises(ValueError, match="invalid agent_input"):
+            async for _ in client.invoke(
+                123,  # ty: ignore
+                session_id=_VALID_SESSION_ID,
+            ):
+                pass  # pragma: no cover
 
 
 class TestTranslateError:
@@ -289,20 +323,10 @@ class TestTranslateError:
         assert "[ValidationException]" in str(result)
 
 
-class TestNextLine:
-    def test_next_line_returns_bytes(self) -> None:
-        result = AgentCoreClient._next_line(iter([b"hello"]))
-        assert result == b"hello"
-
-    def test_next_line_returns_sentinel_on_exhaustion(self) -> None:
-        result = AgentCoreClient._next_line(iter([]))
-        assert result is _STREAM_DONE
-
-
 class TestInvokeRetry:
     @pytest.mark.asyncio
     async def test_retries_on_throttling(self, mock_boto3_session: MagicMock) -> None:
-        from strands_compose_agentcore.client.utils import RetryConfig
+        from strands_compose_agentcore.types import RetryConfig
 
         client = AgentCoreClient(
             _TEST_ARN,
@@ -316,13 +340,13 @@ class TestInvokeRetry:
             _make_client_error("ThrottlingException"),
             {"response": body},
         ]
-        events = [e async for e in client.invoke(session_id=_VALID_SESSION_ID, prompt="Hi")]
+        events = [e async for e in client.invoke("Hi", session_id=_VALID_SESSION_ID)]
         assert len(events) == 1
         assert client._client.invoke_agent_runtime.call_count == 3
 
     @pytest.mark.asyncio
     async def test_raises_after_max_retries(self, mock_boto3_session: MagicMock) -> None:
-        from strands_compose_agentcore.client.utils import RetryConfig
+        from strands_compose_agentcore.types import RetryConfig
 
         client = AgentCoreClient(
             _TEST_ARN,
@@ -331,12 +355,12 @@ class TestInvokeRetry:
         )
         client._client.invoke_agent_runtime.side_effect = _make_client_error("ThrottlingException")
         with pytest.raises(ThrottledError):
-            async for _ in client.invoke(session_id=_VALID_SESSION_ID, prompt="Hi"):
+            async for _ in client.invoke("Hi", session_id=_VALID_SESSION_ID):
                 pass
 
     @pytest.mark.asyncio
     async def test_no_retry_on_access_denied(self, mock_boto3_session: MagicMock) -> None:
-        from strands_compose_agentcore.client.utils import RetryConfig
+        from strands_compose_agentcore.types import RetryConfig
 
         client = AgentCoreClient(
             _TEST_ARN,
@@ -347,7 +371,7 @@ class TestInvokeRetry:
             "AccessDeniedException"
         )
         with pytest.raises(AccessDeniedError):
-            async for _ in client.invoke(session_id=_VALID_SESSION_ID, prompt="Hi"):
+            async for _ in client.invoke("Hi", session_id=_VALID_SESSION_ID):
                 pass
         assert client._client.invoke_agent_runtime.call_count == 1
 
@@ -356,6 +380,6 @@ class TestInvokeRetry:
         client = AgentCoreClient(_TEST_ARN, session=mock_boto3_session)
         client._client.invoke_agent_runtime.side_effect = _make_client_error("ThrottlingException")
         with pytest.raises(ThrottledError):
-            async for _ in client.invoke(session_id=_VALID_SESSION_ID, prompt="Hi"):
+            async for _ in client.invoke("Hi", session_id=_VALID_SESSION_ID):
                 pass
         assert client._client.invoke_agent_runtime.call_count == 1
