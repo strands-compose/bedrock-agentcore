@@ -22,6 +22,10 @@ def create_app(
     *,
     cors_origins: list[str] | None = None,
     suppress_runtime_logging: bool = False,
+    invocation_timeout: float | None = None,
+    max_payload_bytes: int | None = 25 * 1024 * 1024,
+    max_media_bytes: int = 20 * 1024 * 1024,
+    max_media_blocks: int = 20,
 ) -> BedrockAgentCoreApp:
 ```
 
@@ -33,6 +37,10 @@ def create_app(
 | `infra` | `ResolvedInfra \| None` | `None` | Pre-resolved infrastructure. `None` calls `resolve_infra()` automatically |
 | `cors_origins` | `list[str] \| None` | `None` | Allowed CORS origins. Set to `["*"]` for local dev |
 | `suppress_runtime_logging` | `bool` | `False` | Remove the JSON log handler on `bedrock_agentcore.app` logger |
+| `invocation_timeout` | `float \| None` | `None` | Max seconds for a single invocation. `None` means no timeout |
+| `max_payload_bytes` | `int \| None` | 25 MiB | Max JSON-serialized request body size. `None` disables the check |
+| `max_media_bytes` | `int` | 20 MiB | Max decoded bytes for any single image or document block |
+| `max_media_blocks` | `int` | `20` | Max number of image and document blocks per request |
 
 ### Config Input Formats
 
@@ -81,7 +89,7 @@ If a request arrives with a *different* session ID while the server is idle, the
 
 Each request goes through this sequence:
 
-1. **Validate** — checks that `prompt` exists in the JSON payload
+1. **Validate** — checks that the JSON payload contains a `prompt` key whose value is a string, a single content block, or a list of content blocks
 2. **Concurrency guard** — if an invocation is already in progress, rejects the request with an error event and reports `HEALTHY_BUSY` on `/ping` so AgentCore Runtime can back off
 3. **Resolve session** — creates agents on first call (lazy), reuses on subsequent calls within the same session
 4. **Stream** — runs the entry agent asynchronously and yields `StreamEvent` dicts as Server-Sent Events
