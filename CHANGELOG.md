@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Multimodal Payloads
+
+- `/invocations` now accepts `prompt` (str), `content` (`list[ContentBlock]`) or `messages` (`list[Message]`) — exactly one is required
+- Inline media via JSON-safe `source.base64` (decoded server-side to native `bytes`); S3 `source.location` is passed through unchanged
+- New public `MultimodalPayloadError` raised on invalid payload shape
+- `create_app()` gains `max_payload_bytes` (default 25 MiB), `max_media_bytes` (default 20 MiB), and `max_media_blocks` (default 20)
+- New builder helpers in `strands_compose_agentcore.media`: `image_block`, `document_block`, `s3_image_block`, `s3_document_block`
+- `LocalClient.invoke` and `AgentCoreClient.invoke` gain `content=` and `messages=` kwargs alongside the existing `prompt=`; `payload_extras=` still works for forward-compat
+- `MultiAgentBase` entries reject full `messages` conversations with a structured error
+- New example: `examples/03_multimodal/` (vision-capable single agent + client script)
+- New chapter section: `docs/Chapter_04.md` — "Multimodal Payloads"
+
 ## v0.1.0
 
 Initial release.

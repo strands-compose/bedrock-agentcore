@@ -85,6 +85,50 @@ class TestLocalClientInvoke:
         ):
             _ = list(client.invoke(prompt="hello"))
 
+    def test_invoke_with_content_sends_content_body(self) -> None:
+        client = LocalClient(session_id="sess-1")
+        response = MagicMock()
+        response.__iter__.return_value = iter([_event_line("complete")])
+        response_cm = MagicMock()
+        response_cm.__enter__.return_value = response
+        response_cm.__exit__.return_value = False
+
+        blocks = [{"text": "describe"}, {"image": {"format": "png", "source": {"base64": "AA=="}}}]
+        with patch(
+            "strands_compose_agentcore.client.local.urlopen", return_value=response_cm
+        ) as mock_urlopen:
+            _ = list(client.invoke(content=blocks))
+
+        request = mock_urlopen.call_args.args[0]
+        assert json.loads(request.data.decode()) == {"content": blocks}
+
+    def test_invoke_with_messages_sends_messages_body(self) -> None:
+        client = LocalClient(session_id="sess-1")
+        response = MagicMock()
+        response.__iter__.return_value = iter([_event_line("complete")])
+        response_cm = MagicMock()
+        response_cm.__enter__.return_value = response
+        response_cm.__exit__.return_value = False
+
+        msgs = [{"role": "user", "content": [{"text": "hi"}]}]
+        with patch(
+            "strands_compose_agentcore.client.local.urlopen", return_value=response_cm
+        ) as mock_urlopen:
+            _ = list(client.invoke(messages=msgs))
+
+        request = mock_urlopen.call_args.args[0]
+        assert json.loads(request.data.decode()) == {"messages": msgs}
+
+    def test_invoke_rejects_zero_primary_kwargs(self) -> None:
+        client = LocalClient()
+        with pytest.raises(ValueError, match="exactly one"):
+            next(client.invoke())
+
+    def test_invoke_rejects_multiple_primary_kwargs(self) -> None:
+        client = LocalClient()
+        with pytest.raises(ValueError, match="exactly one"):
+            next(client.invoke(prompt="a", messages=[{"role": "user", "content": [{"text": "b"}]}]))
+
 
 class TestLocalClientRepl:
     def test_repl_renders_stream_and_flushes(self) -> None:

@@ -26,6 +26,8 @@ from .client import (
     RetryConfig,
     ThrottledError,
 )
+from .media import document_block, image_block, s3_document_block, s3_image_block
+from .payload import MultimodalPayloadError
 
 __all__ = [
     "AccessDeniedError",
@@ -33,7 +35,12 @@ __all__ = [
     "AgentCoreClientError",
     "ClientConnectionError",
     "LocalClient",
+    "MultimodalPayloadError",
     "RetryConfig",
     "ThrottledError",
     "create_app",
+    "document_block",
+    "image_block",
+    "s3_document_block",
+    "s3_image_block",
 ]

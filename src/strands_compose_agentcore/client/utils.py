@@ -18,6 +18,7 @@ __all__ = [
     "DEFAULT_SESSION_ID",
     "RetryConfig",
     "ThrottledError",
+    "build_invocation_body",
     "parse_sse_line",
     "translate_error",
 ]
@@ -125,3 +126,56 @@ def translate_error(exc: Any) -> AgentCoreClientError:
     message = exc.response.get("Error", {}).get("Message", str(exc))
     error_cls = _ERROR_MAP.get(code, AgentCoreClientError)
     return error_cls(f"[{code}] {message}" if code else message)
+
+
+# ---------------------------------------------------------------------------
+# Invocation body assembly
+# ---------------------------------------------------------------------------
+
+
+def build_invocation_body(
+    *,
+    prompt: str | None = None,
+    content: list[dict[str, Any]] | None = None,
+    messages: list[dict[str, Any]] | None = None,
+    payload_extras: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the JSON body for an ``/invocations`` request.
+
+    Validates that exactly one of ``prompt`` / ``content`` / ``messages``
+    is supplied and merges ``payload_extras`` for forward-compatibility.
+
+    Args:
+        prompt: Plain string user turn.
+        content: A list of Strands ``ContentBlock`` dicts.
+        messages: A full ``Messages`` list.
+        payload_extras: Additional keys merged into the body.
+
+    Returns:
+        A dict ready for ``json.dumps``.
+
+    Raises:
+        ValueError: When zero or multiple primary keys are supplied.
+    """
+    provided = [
+        name
+        for name, value in (("prompt", prompt), ("content", content), ("messages", messages))
+        if value is not None
+    ]
+    if not provided:
+        raise ValueError("exactly one of prompt=, content=, messages= is required")
+    if len(provided) > 1:
+        raise ValueError(
+            "exactly one of prompt=, content=, messages= is required, got %s" % ", ".join(provided)
+        )
+
+    body: dict[str, Any] = {}
+    if payload_extras:
+        body.update(payload_extras)
+    if prompt is not None:
+        body["prompt"] = prompt
+    elif content is not None:
+        body["content"] = content
+    else:
+        body["messages"] = messages
+    return body

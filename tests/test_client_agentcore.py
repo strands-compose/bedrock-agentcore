@@ -111,7 +111,7 @@ class TestInvokeSync:
         mock_api = client._client.invoke_agent_runtime
         mock_api.return_value = {"response": MagicMock(), "statusCode": 200}
 
-        client._invoke_sync("session-123", "Hello agent", None)
+        client._invoke_sync("session-123", {"prompt": "Hello agent"})
 
         mock_api.assert_called_once_with(
             agentRuntimeArn=_TEST_ARN,
@@ -121,20 +121,10 @@ class TestInvokeSync:
             runtimeSessionId="session-123",
         )
 
-    def test_invoke_sync_payload_extras(self, client: AgentCoreClient) -> None:
-        mock_api = client._client.invoke_agent_runtime
-        mock_api.return_value = {"response": MagicMock(), "statusCode": 200}
-
-        client._invoke_sync("s", "Hi", {"media": {"type": "image"}})
-
-        call_kwargs = mock_api.call_args.kwargs
-        sent_payload = json.loads(call_kwargs["payload"])
-        assert sent_payload == {"prompt": "Hi", "media": {"type": "image"}}
-
     def test_invoke_sync_returns_response(self, client: AgentCoreClient) -> None:
         expected = {"response": MagicMock(), "statusCode": 200}
         client._client.invoke_agent_runtime.return_value = expected
-        result = client._invoke_sync("s", "Hi", None)
+        result = client._invoke_sync("s", {"prompt": "Hi"})
         assert result is expected
 
     def test_invoke_sync_translates_client_error(self, client: AgentCoreClient) -> None:
@@ -142,7 +132,7 @@ class TestInvokeSync:
             "ThrottlingException", "Rate exceeded"
         )
         with pytest.raises(ThrottledError, match="Rate exceeded"):
-            client._invoke_sync("s", "Hi", None)
+            client._invoke_sync("s", {"prompt": "Hi"})
 
 
 class TestInvoke:
@@ -258,6 +248,44 @@ class TestInvoke:
         sent_payload = json.loads(call_kwargs["payload"])
         assert sent_payload["media"] == {"type": "image", "data": "abc"}
         assert sent_payload["prompt"] == "Hi"
+
+
+class TestInvokeContentMessagesKwargs:
+    @pytest.mark.asyncio
+    async def test_invoke_with_content_sends_correct_body(self, client: AgentCoreClient) -> None:
+        body = _make_streaming_body([_make_sse_line("complete", "a")])
+        client._client.invoke_agent_runtime.return_value = {"response": body}
+
+        blocks = [{"text": "hi"}, {"image": {"format": "png", "source": {"base64": "AAA="}}}]
+        _ = [e async for e in client.invoke(session_id=_VALID_SESSION_ID, content=blocks)]
+
+        sent = json.loads(client._client.invoke_agent_runtime.call_args.kwargs["payload"])
+        assert sent == {"content": blocks}
+
+    @pytest.mark.asyncio
+    async def test_invoke_with_messages_sends_correct_body(self, client: AgentCoreClient) -> None:
+        body = _make_streaming_body([_make_sse_line("complete", "a")])
+        client._client.invoke_agent_runtime.return_value = {"response": body}
+
+        msgs = [{"role": "user", "content": [{"text": "hi"}]}]
+        _ = [e async for e in client.invoke(session_id=_VALID_SESSION_ID, messages=msgs)]
+
+        sent = json.loads(client._client.invoke_agent_runtime.call_args.kwargs["payload"])
+        assert sent == {"messages": msgs}
+
+    @pytest.mark.asyncio
+    async def test_invoke_rejects_zero_primary_kwargs(self, client: AgentCoreClient) -> None:
+        with pytest.raises(ValueError, match="exactly one"):
+            async for _ in client.invoke(session_id=_VALID_SESSION_ID):
+                pass  # pragma: no cover
+
+    @pytest.mark.asyncio
+    async def test_invoke_rejects_multiple_primary_kwargs(self, client: AgentCoreClient) -> None:
+        with pytest.raises(ValueError, match="exactly one"):
+            async for _ in client.invoke(
+                session_id=_VALID_SESSION_ID, prompt="x", content=[{"text": "y"}]
+            ):
+                pass  # pragma: no cover
 
 
 class TestTranslateError:

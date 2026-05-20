@@ -13,6 +13,8 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from strands.multiagent.base import MultiAgentBase
+from strands.types.agent import AgentInput
 from strands_compose import (
     AppConfig,
     EventQueue,
@@ -21,6 +23,8 @@ from strands_compose import (
     StreamEvent,
     load_session,
 )
+
+from .payload import MultimodalPayloadError, describe_input
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +100,7 @@ def resolve_session(
 async def stream_invocation(
     resolved: ResolvedConfig,
     events: EventQueue,
-    prompt: str,
+    agent_input: AgentInput,
     *,
     invocation_timeout: float | None = None,
 ) -> AsyncIterator[StreamEvent]:
@@ -105,28 +109,51 @@ async def stream_invocation(
     Args:
         resolved: Fully resolved config with agents and entry point.
         events: The wired EventQueue shared across invocations.
-        prompt: User prompt to send to the entry agent.
+        agent_input: Input passed to the entry agent.  May be a plain
+            string, a ``list[ContentBlock]`` for a multimodal user
+            turn, or a full :data:`~strands.types.content.Messages`
+            conversation.
         invocation_timeout: Maximum seconds to wait for the agent to
             finish.  ``None`` means no timeout.
 
     Yields:
         StreamEvent objects as the agent runs.
+
+    Raises:
+        MultimodalPayloadError: If the entry is a
+            :class:`~strands.multiagent.base.MultiAgentBase` and a
+            full ``messages`` conversation was supplied — multi-agent
+            entries only accept ``str`` or ``list[ContentBlock]``.
     """
     events.flush()
 
+    if resolved.entry is None:
+        raise RuntimeError("entry point not set in resolved config")
+
+    if (
+        isinstance(resolved.entry, MultiAgentBase)
+        and isinstance(agent_input, list)
+        and agent_input
+        and isinstance(agent_input[0], dict)
+        and "role" in agent_input[0]
+    ):
+        raise MultimodalPayloadError(
+            "multi-agent entry does not accept 'messages' input; use 'prompt' or 'content'"
+        )
+
+    input_description = describe_input(agent_input)
+
     async def _run() -> None:
         try:
-            if resolved.entry is None:
-                raise RuntimeError("entry point not set in resolved config")
-            coro = resolved.entry.invoke_async(prompt)
+            coro = resolved.entry.invoke_async(agent_input)  # ty: ignore[invalid-argument-type]
             if invocation_timeout is not None:
                 await asyncio.wait_for(coro, timeout=invocation_timeout)
             else:
                 await coro
         except TimeoutError:
             logger.error(
-                "prompt=<%s>, timeout=<%s> | agent invocation timed out",
-                prompt[:80],
+                "input=<%s>, timeout=<%s> | agent invocation timed out",
+                input_description,
                 invocation_timeout,
             )
             events.put_event(
@@ -141,7 +168,7 @@ async def stream_invocation(
                 )
             )
         except Exception:
-            logger.exception("prompt=<%s> | agent invocation failed", prompt[:80])
+            logger.exception("input=<%s> | agent invocation failed", input_description)
             events.put_event(
                 StreamEvent(
                     type="error",

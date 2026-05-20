@@ -29,6 +29,7 @@ from .utils import (
     AgentCoreClientError,
     RetryConfig,
     ThrottledError,
+    build_invocation_body,
     parse_sse_line,
     translate_error,
 )
@@ -135,26 +136,42 @@ class AgentCoreClient:
         self,
         *,
         session_id: str,
-        prompt: str,
+        prompt: str | None = None,
+        content: list[dict[str, Any]] | None = None,
+        messages: list[dict[str, Any]] | None = None,
         payload_extras: dict[str, Any] | None = None,
     ) -> AsyncGenerator[StreamEvent, None]:
         """Invoke the agent runtime and yield streaming events.
 
-        Sends a JSON payload ``{"prompt": prompt}`` (plus any
-        *payload_extras*) to the deployed agent, then reads the SSE
+        Sends a JSON payload to the deployed agent, then reads the SSE
         response stream and yields
         :class:`~strands_compose.StreamEvent` objects one at a time.
 
+        Exactly one of ``prompt``, ``content``, or ``messages`` must be
+        provided.  ``payload_extras`` is merged into the body for
+        forward compatibility.
+
         Args:
             session_id: AgentCore session identifier (33-256 chars).
-            prompt: User message to send to the agent.
-            payload_extras: Additional keys merged into the JSON payload.
-                Useful for multi-modal requests (e.g. ``{"media": {...}}``).
+            prompt: Plain string user turn (back-compat default).
+            content: A ``list[ContentBlock]`` for a single multimodal
+                user turn.  Each block follows the Strands
+                ``ContentBlock`` shape; ``source.base64`` is decoded
+                server-side to ``source.bytes``.
+            messages: A full :data:`~strands.types.content.Messages`
+                conversation.  Each message must include ``role`` and
+                ``content``.
+            payload_extras: Additional keys merged into the JSON payload
+                for forward-compatibility.  Avoid setting any of
+                ``prompt``/``content``/``messages`` here.
 
         Yields:
             StreamEvent objects parsed from the response stream.
 
         Raises:
+            ValueError: Session ID outside the 33-256 char range, or
+                zero / multiple of ``prompt``/``content``/``messages``
+                supplied.
             AccessDeniedError: Credentials lack required permissions.
             ThrottledError: Request was rate-limited.
             AgentCoreClientError: Any other service error (includes AWS
@@ -173,6 +190,10 @@ class AgentCoreClient:
                 % (session_id[:20], len(session_id), _MAX_SESSION_ID_LENGTH)
             )
 
+        body = build_invocation_body(
+            prompt=prompt, content=content, messages=messages, payload_extras=payload_extras
+        )
+
         loop = asyncio.get_running_loop()
 
         import random
@@ -180,7 +201,7 @@ class AgentCoreClient:
         for attempt in range(1 + self._retry.max_retries):
             try:
                 response = await loop.run_in_executor(
-                    self._executor, self._invoke_sync, session_id, prompt, payload_extras
+                    self._executor, self._invoke_sync, session_id, body
                 )
                 break
             except ThrottledError:
@@ -273,8 +294,7 @@ class AgentCoreClient:
     def _invoke_sync(
         self,
         session_id: str,
-        prompt: str,
-        payload_extras: dict[str, Any] | None,
+        body: dict[str, Any],
     ) -> dict[str, Any]:
         """Execute the synchronous boto3 invoke_agent_runtime call.
 
@@ -283,14 +303,10 @@ class AgentCoreClient:
         """
         from botocore.exceptions import ClientError
 
-        payload: dict[str, Any] = {"prompt": prompt}
-        if payload_extras:
-            payload.update(payload_extras)
-
         try:
             return self._client.invoke_agent_runtime(
                 agentRuntimeArn=self.agent_runtime_arn,
-                payload=json.dumps(payload).encode(),
+                payload=json.dumps(body).encode(),
                 contentType="application/json",
                 accept="text/event-stream",
                 runtimeSessionId=session_id,

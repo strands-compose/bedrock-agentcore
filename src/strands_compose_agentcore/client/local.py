@@ -24,11 +24,16 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-from .utils import DEFAULT_SESSION_ID, ClientConnectionError, parse_sse_line
+from .utils import (
+    DEFAULT_SESSION_ID,
+    ClientConnectionError,
+    build_invocation_body,
+    parse_sse_line,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -91,8 +96,11 @@ class LocalClient:
     def invoke(
         self,
         *,
-        prompt: str,
+        prompt: str | None = None,
+        content: list[dict[str, Any]] | None = None,
+        messages: list[dict[str, Any]] | None = None,
         session_id: str | None = None,
+        payload_extras: dict[str, Any] | None = None,
     ) -> Generator[StreamEvent, None, None]:
         """Send a prompt and yield streaming events.
 
@@ -100,18 +108,31 @@ class LocalClient:
         lines as they arrive.  Each valid JSON line is parsed into a
         :class:`~strands_compose.StreamEvent` and yielded.
 
+        Exactly one of ``prompt`` / ``content`` / ``messages`` must be
+        supplied; ``payload_extras`` is merged in for forward
+        compatibility.
+
         Args:
-            prompt: User message to send.
+            prompt: Plain string user turn (back-compat default).
+            content: A ``list[ContentBlock]`` for a single multimodal
+                user turn.
+            messages: A full ``Messages`` conversation list.
             session_id: Override the default session ID for this call.
+            payload_extras: Additional keys merged into the JSON body.
 
         Yields:
             StreamEvent objects parsed from the SSE response.
 
         Raises:
+            ValueError: Zero or multiple of
+                ``prompt``/``content``/``messages`` supplied.
             ClientConnectionError: Could not connect to the server.
         """
         sid = session_id or self.session_id
-        body = json.dumps({"prompt": prompt}).encode()
+        body_dict = build_invocation_body(
+            prompt=prompt, content=content, messages=messages, payload_extras=payload_extras
+        )
+        body = json.dumps(body_dict).encode()
         req = Request(
             self.url,
             data=body,
