@@ -1,26 +1,22 @@
-"""Shared client utilities: SSE parsing and exception types."""
+"""Shared client helpers: SSE parsing, error translation, body assembly."""
 
 from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
 from typing import Any
 
 from strands_compose import StreamEvent
 
+from ..types import (
+    AccessDeniedError,
+    AgentCoreClientError,
+    AgentInput,
+    ThrottledError,
+)
+
 logger = logging.getLogger(__name__)
 
-__all__ = [
-    "AccessDeniedError",
-    "AgentCoreClientError",
-    "ClientConnectionError",
-    "DEFAULT_SESSION_ID",
-    "RetryConfig",
-    "ThrottledError",
-    "parse_sse_line",
-    "translate_error",
-]
 
 # ---------------------------------------------------------------------------
 # Session ID default
@@ -61,51 +57,8 @@ def parse_sse_line(text: str) -> StreamEvent | None:
 
 
 # ---------------------------------------------------------------------------
-# Exceptions
+# Error translation
 # ---------------------------------------------------------------------------
-
-
-class AgentCoreClientError(Exception):
-    """Base exception for all client errors (local and remote)."""
-
-
-class ClientConnectionError(AgentCoreClientError, ConnectionError):
-    """Raised when the client cannot reach the agent server.
-
-    Inherits from both :class:`AgentCoreClientError` and the built-in
-    :class:`ConnectionError` so callers can catch either.
-    """
-
-
-class AccessDeniedError(AgentCoreClientError):
-    """Raised when AWS credentials lack permission to invoke the agent runtime.
-
-    Actionable: check IAM policy for ``bedrock-agentcore:InvokeAgentRuntime``.
-    """
-
-
-class ThrottledError(AgentCoreClientError):
-    """Raised when the request is rate-limited by the service.
-
-    Actionable: implement exponential backoff / retry.
-    """
-
-
-@dataclass
-class RetryConfig:
-    """Configuration for exponential backoff retry on throttled requests.
-
-    Args:
-        max_retries: Maximum number of retry attempts.  0 means no retries.
-        base_delay: Initial delay in seconds before the first retry.
-        max_delay: Maximum delay in seconds between retries.
-        jitter: Whether to add random jitter (0 to base_delay) to each delay.
-    """
-
-    max_retries: int = 3
-    base_delay: float = 1.0
-    max_delay: float = 30.0
-    jitter: bool = True
 
 
 _ERROR_MAP: dict[str, type[AgentCoreClientError]] = {
@@ -125,3 +78,37 @@ def translate_error(exc: Any) -> AgentCoreClientError:
     message = exc.response.get("Error", {}).get("Message", str(exc))
     error_cls = _ERROR_MAP.get(code, AgentCoreClientError)
     return error_cls(f"[{code}] {message}" if code else message)
+
+
+# ---------------------------------------------------------------------------
+# Invocation body assembly
+# ---------------------------------------------------------------------------
+
+
+def build_invocation_body(agent_input: AgentInput) -> dict[str, Any]:
+    """Build the JSON body for an ``/invocations`` request.
+
+    The wire carries a single ``prompt`` key whose value mirrors the
+    ``AgentInput`` shape:
+
+    * ``str`` -> ``{"prompt": str}``
+    * one content-block dict -> ``{"prompt": [dict]}``
+    * non-empty list of content blocks -> ``{"prompt": [...]}``
+
+    Args:
+        agent_input: Prompt text, a single content block, or a list of
+            content blocks.
+
+    Returns:
+        A dict ready for ``json.dumps``.
+
+    Raises:
+        ValueError: ``agent_input`` is not a supported shape.
+    """
+    if isinstance(agent_input, str):
+        return {"prompt": agent_input}
+    if isinstance(agent_input, dict):
+        return {"prompt": [agent_input]}
+    if isinstance(agent_input, list) and agent_input:
+        return {"prompt": list(agent_input)}
+    raise ValueError("invalid agent_input: %r" % (agent_input,))

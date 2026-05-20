@@ -14,16 +14,16 @@ provide a :meth:`repl` method for interactive terminal use with
 
 from __future__ import annotations
 
-from .agentcore import AgentCoreClient
-from .local import LocalClient
-from .utils import (
-    DEFAULT_SESSION_ID,
+from ..types import (
     AccessDeniedError,
     AgentCoreClientError,
     ClientConnectionError,
     RetryConfig,
     ThrottledError,
 )
+from .agentcore import AgentCoreClient
+from .local import LocalClient
+from .utils import DEFAULT_SESSION_ID
 
 __all__ = [
     "AccessDeniedError",

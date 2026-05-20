@@ -10,9 +10,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from strands.types.agent import AgentInput
 from strands_compose import (
     AppConfig,
     EventQueue,
@@ -23,35 +25,6 @@ from strands_compose import (
 )
 
 logger = logging.getLogger(__name__)
-
-# AgentCore session ID length constraints.
-_MIN_SESSION_ID_LENGTH = 33
-_MAX_SESSION_ID_LENGTH = 256
-
-
-def validate_session_id(session_id: str | None) -> None:
-    """Validate the AgentCore session ID length.
-
-    Args:
-        session_id: The raw session ID from the runtime header.
-
-    Raises:
-        ValueError: If the session ID is outside the 33–256 char range.
-    """
-    if session_id is None:
-        return
-    if len(session_id) < _MIN_SESSION_ID_LENGTH:
-        raise ValueError(
-            "session_id=<%s> is too short (%d chars). "
-            "AgentCore requires at least %d characters."
-            % (session_id, len(session_id), _MIN_SESSION_ID_LENGTH)
-        )
-    if len(session_id) > _MAX_SESSION_ID_LENGTH:
-        raise ValueError(
-            "session_id=<%s...> is too long (%d chars). "
-            "AgentCore allows at most %d characters."
-            % (session_id[:20], len(session_id), _MAX_SESSION_ID_LENGTH)
-        )
 
 
 @dataclass
@@ -96,7 +69,7 @@ def resolve_session(
 async def stream_invocation(
     resolved: ResolvedConfig,
     events: EventQueue,
-    prompt: str,
+    agent_input: AgentInput,
     *,
     invocation_timeout: float | None = None,
 ) -> AsyncIterator[StreamEvent]:
@@ -105,7 +78,9 @@ async def stream_invocation(
     Args:
         resolved: Fully resolved config with agents and entry point.
         events: The wired EventQueue shared across invocations.
-        prompt: User prompt to send to the entry agent.
+        agent_input: Input passed to the entry agent.  May be a plain
+            string, a ``list[ContentBlock]`` for a multimodal user turn,
+            or a list of interrupt responses.
         invocation_timeout: Maximum seconds to wait for the agent to
             finish.  ``None`` means no timeout.
 
@@ -114,19 +89,22 @@ async def stream_invocation(
     """
     events.flush()
 
+    if resolved.entry is None:
+        raise RuntimeError("entry point not set in resolved config")
+
+    input_kind = type(agent_input).__name__
+
     async def _run() -> None:
         try:
-            if resolved.entry is None:
-                raise RuntimeError("entry point not set in resolved config")
-            coro = resolved.entry.invoke_async(prompt)
+            coro = resolved.entry.invoke_async(agent_input)  # ty: ignore[invalid-argument-type]
             if invocation_timeout is not None:
                 await asyncio.wait_for(coro, timeout=invocation_timeout)
             else:
                 await coro
-        except TimeoutError:
+        except asyncio.TimeoutError:
             logger.error(
-                "prompt=<%s>, timeout=<%s> | agent invocation timed out",
-                prompt[:80],
+                "input_kind=<%s>, timeout=<%s> | agent invocation timed out",
+                input_kind,
                 invocation_timeout,
             )
             events.put_event(
@@ -141,7 +119,7 @@ async def stream_invocation(
                 )
             )
         except Exception:
-            logger.exception("prompt=<%s> | agent invocation failed", prompt[:80])
+            logger.exception("input_kind=<%s> | agent invocation failed", input_kind)
             events.put_event(
                 StreamEvent(
                     type="error",
@@ -154,6 +132,15 @@ async def stream_invocation(
             await events.close()
 
     task = asyncio.create_task(_run())
-    while (event := await events.get()) is not None:
-        yield event
-    await task
+    completed_stream = False
+    try:
+        while (event := await events.get()) is not None:
+            yield event
+        completed_stream = True
+    finally:
+        if completed_stream:
+            await task
+        else:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
