@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncGenerator
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from starlette.routing import Route
-from strands_compose import EventQueue
+from strands_compose import EventQueue, StreamEvent
 
+from strands_compose_agentcore._utils import validate_session_id
 from strands_compose_agentcore.app import _make_lifespan, create_app
 from strands_compose_agentcore.session import (
     resolve_session,
     stream_invocation,
-    validate_session_id,
 )
 
 from .conftest import make_app_config, make_infra, make_resolved_config
@@ -170,6 +172,34 @@ class TestStreamInvocation:
         results = [item async for item in stream_invocation(resolved, events, "hi")]
         assert len(results) == 1
         assert results[0].type == "error"
+
+    @pytest.mark.asyncio
+    async def test_cancels_agent_task_when_stream_closed_early(self) -> None:
+        event = MagicMock()
+        queue: asyncio.Queue = asyncio.Queue()
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+        resolved = MagicMock()
+
+        async def _slow_invoke(p: str) -> None:
+            queue.put_nowait(event)
+            started.set()
+            try:
+                await asyncio.sleep(100)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        resolved.entry.invoke_async = _slow_invoke
+        events = EventQueue(queue)
+        stream = cast(AsyncGenerator[StreamEvent, None], stream_invocation(resolved, events, "hi"))
+
+        first = await stream.__anext__()
+        await started.wait()
+        await stream.aclose()
+
+        assert first is event
+        assert cancelled.is_set()
 
 
 class TestValidateSessionId:

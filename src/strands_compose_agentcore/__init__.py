@@ -17,13 +17,21 @@ Example::
 from __future__ import annotations
 
 from .app import create_app
-from .client import (
+from .client import AgentCoreClient, LocalClient
+from .media import document, image, reply, text
+from .types import (
     AccessDeniedError,
-    AgentCoreClient,
     AgentCoreClientError,
+    AgentInput,
     ClientConnectionError,
-    LocalClient,
+    ContentBlock,
+    DocumentBlock,
+    DocumentFormat,
+    ImageBlock,
+    ImageFormat,
+    ReplyBlock,
     RetryConfig,
+    TextBlock,
     ThrottledError,
 )
 
@@ -31,9 +39,21 @@ __all__ = [
     "AccessDeniedError",
     "AgentCoreClient",
     "AgentCoreClientError",
+    "AgentInput",
     "ClientConnectionError",
+    "ContentBlock",
+    "DocumentBlock",
+    "DocumentFormat",
+    "ImageBlock",
+    "ImageFormat",
     "LocalClient",
+    "ReplyBlock",
     "RetryConfig",
+    "TextBlock",
     "ThrottledError",
     "create_app",
+    "document",
+    "image",
+    "reply",
+    "text",
 ]

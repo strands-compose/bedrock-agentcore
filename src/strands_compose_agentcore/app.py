@@ -44,7 +44,9 @@ from strands_compose import (
 )
 from strands_compose.startup import validate_mcp
 
-from .session import SessionState, resolve_session, stream_invocation, validate_session_id
+from ._utils import validate_session_id
+from .payload import MultimodalPayloadError, parse_payload
+from .session import SessionState, resolve_session, stream_invocation
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +107,9 @@ def create_app(
     cors_origins: list[str] | None = None,
     suppress_runtime_logging: bool = False,
     invocation_timeout: float | None = None,
+    max_payload_bytes: int | None = 25 * 1024 * 1024,
+    max_media_bytes: int = 20 * 1024 * 1024,
+    max_media_blocks: int = 20,
 ) -> BedrockAgentCoreApp:
     """Create a BedrockAgentCoreApp with full event streaming.
 
@@ -134,6 +139,15 @@ def create_app(
         invocation_timeout: Maximum seconds to wait for the agent to
             finish a single invocation.  ``None`` (the default) means
             no timeout — the agent runs until completion or failure.
+        max_payload_bytes: Maximum JSON-serialized payload size in
+            bytes.  ``None`` disables the check.  Defaults to 25 MiB,
+            which leaves headroom under the AgentCore Runtime cap
+            after base64 inflation.
+        max_media_bytes: Maximum decoded size in bytes for any single
+            image or document block.  Defaults to 20 MiB.
+        max_media_blocks: Maximum number of media blocks (including
+            image and document blocks) allowed across one invocation.
+            Defaults to 20.
 
     Returns:
         Configured BedrockAgentCoreApp ready to run.
@@ -185,18 +199,27 @@ def create_app(
         back off.
 
         Args:
-            payload: Request payload.  Required key: ``prompt``.
+            payload: Request payload.  Must contain a ``prompt`` key
+                whose value is a string, a single content block dict,
+                or a list of text, image, document, or reply blocks.
 
         Yields:
             JSON-serializable dicts, one per StreamEvent.
         """
-        prompt = payload.get("prompt")
-        if not prompt:
+        try:
+            agent_input = parse_payload(
+                payload,
+                max_payload_bytes=max_payload_bytes,
+                max_media_bytes=max_media_bytes,
+                max_media_blocks=max_media_blocks,
+            )
+        except MultimodalPayloadError as exc:
+            logger.warning("payload rejected | %s", exc)
             yield StreamEvent(
                 type="error",
                 agent_name="",
                 timestamp=datetime.now(tz=timezone.utc),
-                data={"message": "missing or empty required field: prompt"},
+                data={"message": str(exc)},
             ).asdict()
             return
 
@@ -250,12 +273,13 @@ def create_app(
         task_id = app.add_async_task("invoke")
         try:
             async with session.invocation_lock:
-                async for event in stream_invocation(
+                stream = stream_invocation(
                     session.resolved,
                     session.events,
-                    prompt,
+                    agent_input,
                     invocation_timeout=_invocation_timeout,
-                ):
+                )
+                async for event in stream:
                     yield event.asdict()
         finally:
             app.complete_async_task(task_id)

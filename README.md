@@ -9,7 +9,7 @@
 <p>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python 3.11+"></a>
   <a href="https://pypi.org/project/strands-compose-agentcore/"><img src="https://img.shields.io/pypi/v/strands-compose-agentcore.svg" alt="PyPI version"></a>
-  <a href="https://github.com/strands-compose/sdk-python"><img src="https://img.shields.io/badge/strands--compose-0.2.0+-green.svg" alt="strands-compose"></a>
+  <a href="https://github.com/strands-compose/sdk-python"><img src="https://img.shields.io/badge/strands--compose-0.3.0+-green.svg" alt="strands-compose"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License"></a>
 </p>
 
@@ -219,6 +219,7 @@ Every example is self-contained with a `README.md` and everything you need to ru
 |---|---------|-------------------|
 | 01 | [Quick Start](examples/01_quick_start/README.md) | Multi-agent orchestration with tools and the `dev` CLI — run and test locally |
 | 02 | [Deploy](examples/02_deploy/README.md) | End-to-end deployment: create files → test → deploy → connect remotely |
+| 03 | [Multimodal](examples/03_multimodal/README.md) | Sending images and documents alongside text prompts |
 
 ```bash
 # Try the quick start example right now

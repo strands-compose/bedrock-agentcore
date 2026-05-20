@@ -73,7 +73,7 @@ sca client remote --arn <ARN> --region us-east-1
 sca client remote --arn <ARN> --session-id my-session-id-at-least-33-characters-long
 ```
 
-Under the hood, this creates an `AgentCoreClient` — an async boto3 wrapper — and calls `.repl()`. If no `--session-id` is provided, a random UUID-based ID (33+ characters, as required by AgentCore) is generated.
+Under the hood, this creates an `AgentCoreClient` — an async boto3 wrapper — and calls `.repl()`. If no `--session-id` is provided, the fixed default `"default-session-strands-compose-agentcore"` is used.
 
 | Flag | Default | Description |
 |------|---------|-------------|

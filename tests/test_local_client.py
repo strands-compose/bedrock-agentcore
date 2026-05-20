@@ -10,7 +10,8 @@ import pytest
 from strands_compose import StreamEvent
 
 from strands_compose_agentcore.client.local import LocalClient
-from strands_compose_agentcore.client.utils import ClientConnectionError
+from strands_compose_agentcore.media import image, text
+from strands_compose_agentcore.types import ClientConnectionError, ContentBlock
 
 
 def _event_line(event_type: str, data: dict[str, str] | None = None) -> bytes:
@@ -42,7 +43,7 @@ class TestLocalClientInvoke:
         with patch(
             "strands_compose_agentcore.client.local.urlopen", return_value=response_cm
         ) as mock_urlopen:
-            events = list(client.invoke(prompt="hello"))
+            events = list(client.invoke("hello"))
 
         assert len(events) == 1
         assert events[0].type == "token"
@@ -65,7 +66,7 @@ class TestLocalClientInvoke:
         with patch(
             "strands_compose_agentcore.client.local.urlopen", return_value=response_cm
         ) as mock_urlopen:
-            _ = list(client.invoke(prompt="hello", session_id="override-sess"))
+            _ = list(client.invoke("hello", session_id="override-sess"))
 
         request = mock_urlopen.call_args.args[0]
         assert request.headers["X-amzn-bedrock-agentcore-runtime-session-id"] == "override-sess"
@@ -83,7 +84,51 @@ class TestLocalClientInvoke:
                 match="Could not connect to http://localhost:7777/invocations",
             ),
         ):
-            _ = list(client.invoke(prompt="hello"))
+            _ = list(client.invoke("hello"))
+
+    def test_invoke_with_content_sends_content_body(self) -> None:
+        client = LocalClient(session_id="sess-1")
+        response = MagicMock()
+        response.__iter__.return_value = iter([_event_line("complete")])
+        response_cm = MagicMock()
+        response_cm.__enter__.return_value = response
+        response_cm.__exit__.return_value = False
+
+        blocks: list[ContentBlock] = [text("describe"), image(b"data", format="png")]
+        with patch(
+            "strands_compose_agentcore.client.local.urlopen", return_value=response_cm
+        ) as mock_urlopen:
+            _ = list(client.invoke(blocks))
+
+        request = mock_urlopen.call_args.args[0]
+        assert json.loads(request.data.decode()) == {"prompt": blocks}
+
+    def test_invoke_with_single_block_sends_content_list(self) -> None:
+        client = LocalClient(session_id="sess-1")
+        response = MagicMock()
+        response.__iter__.return_value = iter([_event_line("complete")])
+        response_cm = MagicMock()
+        response_cm.__enter__.return_value = response
+        response_cm.__exit__.return_value = False
+
+        block = text("hi")
+        with patch(
+            "strands_compose_agentcore.client.local.urlopen", return_value=response_cm
+        ) as mock_urlopen:
+            _ = list(client.invoke(block))
+
+        request = mock_urlopen.call_args.args[0]
+        assert json.loads(request.data.decode()) == {"prompt": [block]}
+
+    def test_invoke_rejects_empty_list(self) -> None:
+        client = LocalClient()
+        with pytest.raises(ValueError, match="invalid agent_input"):
+            next(client.invoke([]))
+
+    def test_invoke_rejects_wrong_type(self) -> None:
+        client = LocalClient()
+        with pytest.raises(ValueError, match="invalid agent_input"):
+            next(client.invoke(123))  # ty: ignore
 
 
 class TestLocalClientRepl:
@@ -99,7 +144,7 @@ class TestLocalClientRepl:
             renderer = mock_renderer_cls.return_value
             client.repl(session_id="sid-1")
 
-        mock_invoke.assert_called_once_with(prompt="hello", session_id="sid-1")
+        mock_invoke.assert_called_once_with("hello", session_id="sid-1")
         renderer.render.assert_called_once_with(event)
         renderer.flush.assert_called_once()
 

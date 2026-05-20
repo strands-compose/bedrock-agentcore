@@ -1,0 +1,21 @@
+# 03_multimodal — Vision-Capable Single Agent
+#
+# A single agent that accepts both text and images.
+#
+# Run:
+#   sca dev --config examples/03_multimodal/config.yaml
+
+models:
+  default:
+    provider: bedrock
+    model_id: global.anthropic.claude-haiku-4-5-20251001-v1:0
+
+agents:
+  vision:
+    model: default
+    description: "Describe and reason about images and documents."
+    system_prompt: |
+      You are a visual analyst.  When given an image or a document,
+      describe what you see and answer the user's question.
+
+entry: vision

@@ -23,7 +23,7 @@ client = LocalClient(
     session_id="default-session-strands-compose-agentcore",   # default
 )
 
-for event in client.invoke(prompt="Hello"):
+for event in client.invoke("Hello"):
     print(event.type, event.data)
 ```
 
@@ -56,8 +56,8 @@ client = AgentCoreClient(
 )
 
 async for event in client.invoke(
+    "Hello!",
     session_id="a" * 33,  # 33+ chars required
-    prompt="Hello!",
 ):
     print(event.type, event.data)
 ```
@@ -69,18 +69,18 @@ async for event in client.invoke(
 | `session` | `boto3.Session \| None` | `None` | Pre-configured boto3 session |
 | `timeout` | `float \| None` | `None` | Socket read timeout in seconds |
 | `max_concurrent_streams` | `int` | `64` | Max concurrent `invoke()` calls |
+| `retry` | `RetryConfig \| None` | `None` | Retry config for throttled requests. `None` disables retry. Pass `RetryConfig()` for sensible defaults |
 
 ### Session ID Requirements
 
-AgentCore requires session IDs of 33–256 characters. The `AgentCoreClient` enforces both bounds and raises `ValueError` for IDs outside this range. When using the REPL without specifying a session ID, a random UUID-based ID (33+ characters) is generated automatically.
+AgentCore requires session IDs of 33–256 characters. The `AgentCoreClient` enforces both bounds and raises `ValueError` for IDs outside this range. When using the REPL without specifying a session ID, the fixed default `"default-session-strands-compose-agentcore"` is used.
 
 ### invoke() Parameters
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `session_id` | `str` | required | AgentCore session ID (33-256 chars) |
-| `prompt` | `str` | required | User message |
-| `payload_extras` | `dict \| None` | `None` | Additional keys merged into the JSON payload |
+| `agent_input` | `str \| ContentBlock \| list[ContentBlock]` | required | User turn: plain string, one content block, or a list of blocks |
+| `session_id` | `str` | required (keyword-only) | AgentCore session ID (33-256 chars) |
 
 Returns an `AsyncGenerator[StreamEvent, None]`.
 
@@ -111,7 +111,7 @@ from strands_compose_agentcore import (
 
 ```python
 async with AgentCoreClient(ARN, region="us-west-2") as client:
-    async for event in client.invoke(session_id="a" * 33, prompt="Hello"):
+    async for event in client.invoke("Hello", session_id="a" * 33):
         print(event.type, event.data)
 # thread pool is shut down automatically
 ```
@@ -143,8 +143,8 @@ app = FastAPI(lifespan=lifespan)
 async def chat(prompt: str, session_id: str):
     events = []
     async for event in app.state.agent.invoke(
+        prompt,
         session_id=session_id,
-        prompt=prompt,
     ):
         events.append(event.asdict())
     return {"events": events}
@@ -162,8 +162,8 @@ import json
 async def stream(prompt: str, session_id: str):
     async def generate():
         async for event in app.state.agent.invoke(
+            prompt,
             session_id=session_id,
-            prompt=prompt,
         ):
             yield f"data: {json.dumps(event.asdict())}\n\n"
 
@@ -191,7 +191,7 @@ def handler(event, context):
 
 async def collect_events(prompt, session_id):
     result = []
-    async for event in client.invoke(session_id=session_id, prompt=prompt):
+    async for event in client.invoke(prompt, session_id=session_id):
         result.append(event.asdict())
     return result
 ```
@@ -206,7 +206,7 @@ client = AgentCoreClient(ARN, region="us-west-2")
 
 async def process_prompt(session_id: str, prompt: str) -> list:
     events = []
-    async for event in client.invoke(session_id=session_id, prompt=prompt):
+    async for event in client.invoke(prompt, session_id=session_id):
         if event.type == "text":
             events.append(event.data.get("text", ""))
     return events

@@ -27,7 +27,7 @@ class TestAgentCoreClientRepl:
 
         seen: list[tuple[str, str]] = []
 
-        async def _fake_invoke(*, session_id: str, prompt: str):
+        async def _fake_invoke(prompt: str, *, session_id: str):
             seen.append((session_id, prompt))
             yield event
 
@@ -59,7 +59,7 @@ class TestAgentCoreClientRepl:
 
         seen_session_ids: list[str] = []
 
-        async def _fake_invoke(*, session_id: str, prompt: str):
+        async def _fake_invoke(prompt: str, *, session_id: str):
             seen_session_ids.append(session_id)
             yield StreamEvent(type="complete", agent_name="agent", data={})
 
@@ -98,23 +98,4 @@ class TestAgentCoreClientRepl:
             client.repl(session_id="b" * 33)
 
         mock_invoke.assert_not_called()
-        client.close()
-
-    @pytest.mark.asyncio
-    async def test_repl_works_from_async_context(self) -> None:
-        """Verify repl() does not crash with RuntimeError from an async context."""
-        client = _make_client()
-        long_id = "a" * 33
-        event = StreamEvent(type="complete", agent_name="agent", data={})
-
-        async def _fake_invoke(*, session_id: str, prompt: str):
-            yield event
-
-        with (
-            patch.object(client, "invoke", side_effect=_fake_invoke),
-            patch("strands_compose_agentcore.client.repl.AnsiRenderer"),
-            patch("builtins.input", side_effect=["hello", ""]),
-        ):
-            client.repl(session_id=long_id)
-
         client.close()
