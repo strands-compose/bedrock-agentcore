@@ -12,7 +12,7 @@ Example::
 
     from strands_compose_agentcore import LocalClient
 
-    for event in LocalClient().invoke(prompt="Hello"):
+    for event in LocalClient().invoke("Hello"):
         print(event.type, event.data)
 
 Interactive REPL::
@@ -28,7 +28,12 @@ from typing import TYPE_CHECKING
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-from .utils import DEFAULT_SESSION_ID, ClientConnectionError, parse_sse_line
+from ..types import AgentInput, ClientConnectionError
+from .utils import (
+    DEFAULT_SESSION_ID,
+    build_invocation_body,
+    parse_sse_line,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -82,7 +87,7 @@ class LocalClient:
         Example::
 
             client = LocalClient("http://localhost:8080/invocations")
-            for event in client.invoke(prompt="Hello"):
+            for event in client.invoke("Hello"):
                 print(event.type, event.data)
         """
         self.url = url
@@ -90,28 +95,40 @@ class LocalClient:
 
     def invoke(
         self,
+        agent_input: AgentInput,
         *,
-        prompt: str,
         session_id: str | None = None,
     ) -> Generator[StreamEvent, None, None]:
-        """Send a prompt and yield streaming events.
+        """Send an agent input and yield streaming events.
 
         Opens an HTTP connection to the local server and reads SSE
         lines as they arrive.  Each valid JSON line is parsed into a
         :class:`~strands_compose.StreamEvent` and yielded.
 
+                ``agent_input`` accepts this package's small client contract:
+
+                * ``str`` — a plain user prompt.
+                * one content block or a list of content blocks built with
+                    :func:`~strands_compose_agentcore.text`,
+                    :func:`~strands_compose_agentcore.image`,
+                    :func:`~strands_compose_agentcore.document`, or
+                    :func:`~strands_compose_agentcore.reply`.
+
         Args:
-            prompt: User message to send.
+            agent_input: The user turn to send (see shapes above).
             session_id: Override the default session ID for this call.
 
         Yields:
             StreamEvent objects parsed from the SSE response.
 
         Raises:
+            TypeError: ``agent_input`` is not a supported client input type.
+            ValueError: ``agent_input`` is invalid or an empty list.
             ClientConnectionError: Could not connect to the server.
         """
         sid = session_id or self.session_id
-        body = json.dumps({"prompt": prompt}).encode()
+        body_dict = build_invocation_body(agent_input)
+        body = json.dumps(body_dict).encode()
         req = Request(
             self.url,
             data=body,
@@ -148,7 +165,7 @@ class LocalClient:
 
         def _stream(prompt: str, sid: str, renderer: AnsiRenderer) -> bool:
             try:
-                for event in self.invoke(prompt=prompt, session_id=sid):
+                for event in self.invoke(prompt, session_id=sid):
                     renderer.render(event)
             except ClientConnectionError as exc:
                 print(f"\n{exc}", file=sys.stderr)

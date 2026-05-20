@@ -19,16 +19,17 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import threading
+import random
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
+from .._utils import validate_session_id
+from ..types import AgentInput, RetryConfig, ThrottledError
 from .repl import run_repl
 from .utils import (
     DEFAULT_SESSION_ID,
-    AgentCoreClientError,
-    RetryConfig,
-    ThrottledError,
+    build_invocation_body,
     parse_sse_line,
     translate_error,
 )
@@ -39,25 +40,7 @@ if TYPE_CHECKING:
     import boto3
     from strands_compose import AnsiRenderer, StreamEvent
 
-__all__ = ["AgentCoreClient"]
-
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-_STREAM_DONE = object()  # sentinel for StopIteration in executor
-
-# AgentCore requires session IDs of 33–256 chars.
-_MIN_SESSION_ID_LENGTH = 33
-_MAX_SESSION_ID_LENGTH = 256
-
-
-# ---------------------------------------------------------------------------
-# Client
-# ---------------------------------------------------------------------------
 
 
 class AgentCoreClient:
@@ -90,13 +73,11 @@ class AgentCoreClient:
                 response.  ``None`` uses the botocore default.
             max_concurrent_streams: Maximum number of concurrent
                 ``invoke()`` calls that can stream simultaneously.
-                Each active stream holds one thread while waiting
-                for the next SSE event.  Set this to the expected
-                peak number of concurrent tenant sessions.
+                Each active stream holds one thread while reading the
+                SSE response.
             retry: Retry configuration for throttled requests.
                 ``None`` disables retry (default).  Pass
-                ``RetryConfig()`` for sensible defaults (3 retries,
-                exponential backoff with jitter).
+                ``RetryConfig()`` for sensible defaults.
 
         Attributes:
             agent_runtime_arn: Full ARN of the deployed agent runtime.
@@ -124,63 +105,54 @@ class AgentCoreClient:
 
             client_kwargs["config"] = Config(read_timeout=int(timeout))
 
-        self._client = self._session.client(
-            "bedrock-agentcore",
-            **client_kwargs,
-        )
+        self._client = self._session.client("bedrock-agentcore", **client_kwargs)
 
     # -- Public API ----------------------------------------------------------
 
     async def invoke(
         self,
+        agent_input: AgentInput,
         *,
         session_id: str,
-        prompt: str,
-        payload_extras: dict[str, Any] | None = None,
     ) -> AsyncGenerator[StreamEvent, None]:
         """Invoke the agent runtime and yield streaming events.
 
-        Sends a JSON payload ``{"prompt": prompt}`` (plus any
-        *payload_extras*) to the deployed agent, then reads the SSE
+        Sends a JSON payload to the deployed agent, then reads the SSE
         response stream and yields
         :class:`~strands_compose.StreamEvent` objects one at a time.
 
+        ``agent_input`` accepts this package's small client contract:
+
+        * ``str`` — a plain user prompt.
+        * one content block or a list of content blocks built with
+          :func:`~strands_compose_agentcore.text`,
+          :func:`~strands_compose_agentcore.image`,
+          :func:`~strands_compose_agentcore.document`, or
+          :func:`~strands_compose_agentcore.reply`.
+
         Args:
+            agent_input: The user turn to send (see shapes above).
             session_id: AgentCore session identifier (33-256 chars).
-            prompt: User message to send to the agent.
-            payload_extras: Additional keys merged into the JSON payload.
-                Useful for multi-modal requests (e.g. ``{"media": {...}}``).
 
         Yields:
             StreamEvent objects parsed from the response stream.
 
         Raises:
+            ValueError: Session ID outside the 33-256 char range, or
+                ``agent_input`` is not a supported shape.
             AccessDeniedError: Credentials lack required permissions.
             ThrottledError: Request was rate-limited.
             AgentCoreClientError: Any other service error (includes AWS
                 error code and message).
         """
-        if len(session_id) < _MIN_SESSION_ID_LENGTH:
-            raise ValueError(
-                "session_id=<%s> is too short (%d chars). "
-                "AgentCore requires at least %d characters."
-                % (session_id, len(session_id), _MIN_SESSION_ID_LENGTH)
-            )
-        if len(session_id) > _MAX_SESSION_ID_LENGTH:
-            raise ValueError(
-                "session_id=<%s...> is too long (%d chars). "
-                "AgentCore allows at most %d characters."
-                % (session_id[:20], len(session_id), _MAX_SESSION_ID_LENGTH)
-            )
-
+        validate_session_id(session_id)
+        body = build_invocation_body(agent_input)
         loop = asyncio.get_running_loop()
-
-        import random
 
         for attempt in range(1 + self._retry.max_retries):
             try:
                 response = await loop.run_in_executor(
-                    self._executor, self._invoke_sync, session_id, prompt, payload_extras
+                    self._executor, self._invoke_sync, session_id, body
                 )
                 break
             except ThrottledError:
@@ -198,24 +170,34 @@ class AgentCoreClient:
                     delay,
                 )
                 await asyncio.sleep(delay)
-            except AgentCoreClientError:
-                raise
-            except Exception as exc:
-                raise AgentCoreClientError(str(exc)) from exc
 
-        body = response["response"]  # botocore StreamingBody
-        line_iter = body.iter_lines()
+        stream_body = response["response"]  # botocore StreamingBody
+        queue: asyncio.Queue[bytes | None] = asyncio.Queue()
 
-        while True:
-            line = await loop.run_in_executor(self._executor, self._next_line, line_iter)
-            if line is _STREAM_DONE:
-                break
-            if not isinstance(line, bytes):  # pragma: no cover — defensive guard
-                continue
-            text = line.decode("utf-8").strip()
-            event = parse_sse_line(text)
-            if event is not None:
-                yield event
+        def _producer() -> None:
+            try:
+                for line in stream_body.iter_lines():
+                    loop.call_soon_threadsafe(queue.put_nowait, line)
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+
+        producer_future = loop.run_in_executor(self._executor, _producer)
+        try:
+            while True:
+                line = await queue.get()
+                if line is None:
+                    break
+                text = line.decode("utf-8").strip()
+                event = parse_sse_line(text)
+                if event is not None:
+                    yield event
+        finally:
+            close = getattr(stream_body, "close", None)
+            if callable(close):
+                with suppress(Exception):
+                    close()
+            with suppress(Exception):
+                await producer_future
 
     def repl(self, *, session_id: str | None = None) -> None:
         """Start an interactive REPL that streams agent responses with AnsiRenderer.
@@ -228,53 +210,30 @@ class AgentCoreClient:
             session_id: AgentCore session identifier.  If ``None``, uses
                 ``DEFAULT_SESSION_ID``.
         """
-
         sid = session_id or DEFAULT_SESSION_ID
-        if len(sid) < _MIN_SESSION_ID_LENGTH:
-            raise ValueError(
-                "session_id=<%s> is too short (%d chars). "
-                "AgentCore requires at least %d characters."
-                % (sid, len(sid), _MIN_SESSION_ID_LENGTH)
-            )
-        if len(sid) > _MAX_SESSION_ID_LENGTH:
-            raise ValueError(
-                "session_id=<%s...> is too long (%d chars). "
-                "AgentCore allows at most %d characters."
-                % (sid[:20], len(sid), _MAX_SESSION_ID_LENGTH)
-            )
+        validate_session_id(sid)
 
-        loop = asyncio.new_event_loop()
-        loop_thread = threading.Thread(target=loop.run_forever, daemon=True)
-        loop_thread.start()
+        async def _stream_async(prompt: str, target_sid: str, renderer: AnsiRenderer) -> None:
+            async for event in self.invoke(prompt, session_id=target_sid):
+                renderer.render(event)
+            renderer.flush()
 
-        def _stream(prompt: str, sid: str, renderer: AnsiRenderer) -> bool:
-            async def _run() -> None:
-                async for event in self.invoke(session_id=sid, prompt=prompt):
-                    renderer.render(event)
-                renderer.flush()
-
-            future = asyncio.run_coroutine_threadsafe(_run(), loop)
-            future.result()
+        def _stream(prompt: str, target_sid: str, renderer: AnsiRenderer) -> bool:
+            asyncio.run(_stream_async(prompt, target_sid, renderer))
             return True
 
-        try:
-            run_repl(
-                banner=f"AgentCore Client \u2014 {self.agent_runtime_arn}",
-                session_id=sid,
-                stream_fn=_stream,
-            )
-        finally:
-            loop.call_soon_threadsafe(loop.stop)
-            loop_thread.join(timeout=5.0)
-            loop.close()
+        run_repl(
+            banner=f"AgentCore Client \u2014 {self.agent_runtime_arn}",
+            session_id=sid,
+            stream_fn=_stream,
+        )
 
     # -- Private helpers -----------------------------------------------------
 
     def _invoke_sync(
         self,
         session_id: str,
-        prompt: str,
-        payload_extras: dict[str, Any] | None,
+        body: dict[str, Any],
     ) -> dict[str, Any]:
         """Execute the synchronous boto3 invoke_agent_runtime call.
 
@@ -283,14 +242,10 @@ class AgentCoreClient:
         """
         from botocore.exceptions import ClientError
 
-        payload: dict[str, Any] = {"prompt": prompt}
-        if payload_extras:
-            payload.update(payload_extras)
-
         try:
             return self._client.invoke_agent_runtime(
                 agentRuntimeArn=self.agent_runtime_arn,
-                payload=json.dumps(payload).encode(),
+                payload=json.dumps(body).encode(),
                 contentType="application/json",
                 accept="text/event-stream",
                 runtimeSessionId=session_id,
@@ -318,16 +273,3 @@ class AgentCoreClient:
         finish before the pool is torn down.
         """
         self._executor.shutdown(wait=True)
-
-    @staticmethod
-    def _next_line(line_iter: Any) -> bytes | object:
-        """Advance the line iterator, returning ``_STREAM_DONE`` on exhaustion.
-
-        ``StopIteration`` cannot propagate through
-        ``run_in_executor`` — Python converts it to ``RuntimeError``
-        (PEP 479).  This helper catches it and returns a sentinel instead.
-        """
-        try:
-            return next(line_iter)
-        except StopIteration:
-            return _STREAM_DONE
