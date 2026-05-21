@@ -57,6 +57,7 @@ All YAML options are defined by [strands-compose](https://github.com/strands-com
 ```toml
 [project]
 name = "my-agent"
+version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "strands-compose-agentcore",
@@ -117,7 +118,7 @@ Verify your agent works before deploying.
 ### 3. Create an AgentCore project
 
 ```bash
-agentcore create --name project --no-agent
+agentcore create --name project --no-agent --skip-git
 cd project
 ```
 
@@ -237,7 +238,7 @@ sca dev --config my_agent/config.yaml
 ### 3. Create an AgentCore project
 
 ```bash
-agentcore create --name project --no-agent
+agentcore create --name project --no-agent --skip-git
 cd project
 ```
 

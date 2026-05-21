@@ -33,7 +33,7 @@ This directory contains the three files every deployable agent needs — use the
 The AgentCore CLI manages deployment scaffolding. Create a project:
 
 ```bash
-agentcore create --name project --no-agent
+agentcore create --name project --no-agent --skip-git
 cd project
 ```
 
@@ -255,7 +255,7 @@ agentcore deploy -y
 
 ```bash
 # 1. Create project
-agentcore create --name project --no-agent
+agentcore create --name project --no-agent --skip-git
 cd project
 
 # 2. Create agent files
