@@ -175,7 +175,9 @@ def create_app(
     )
 
     if suppress_runtime_logging:
-        logging.getLogger("bedrock_agentcore.app").handlers.clear()
+        _log = logging.getLogger("bedrock_agentcore.app")
+        _log.handlers.clear()
+        _log.propagate = False
 
     if cors_origins:
         app.add_middleware(
