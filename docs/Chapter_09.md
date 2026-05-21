@@ -34,7 +34,7 @@ We recommend it for individual projects because it handles everything with minim
 
 ```bash
 # Scaffold a project
-agentcore create --name project --no-agent
+agentcore create --name project --no-agent --skip-git
 cd project
 
 # Add your agent files (main.py, config.yaml, pyproject.toml)

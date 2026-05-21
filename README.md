@@ -166,6 +166,7 @@ app = create_app(Path(__file__).parent / "config.yaml")
 ```toml
 [project]
 name = "my-agent"
+version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "strands-compose-agentcore",
@@ -176,7 +177,7 @@ dependencies = [
 
 ```bash
 # 1. Create an AgentCore project (AgentCore CLI)
-agentcore create --name project --no-agent
+agentcore create --name project --no-agent --skip-git
 cd project
 
 # 2. Create your agent files (main.py, config.yaml, pyproject.toml)

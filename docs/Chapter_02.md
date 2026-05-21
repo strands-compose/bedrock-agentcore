@@ -98,6 +98,7 @@ You also need a `pyproject.toml` to declare the dependency for deployment:
 ```toml
 [project]
 name = "my-agent"
+version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "strands-compose-agentcore",
