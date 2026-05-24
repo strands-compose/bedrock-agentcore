@@ -234,6 +234,10 @@ def create_app(
 
         if cached is not None and cached.session_id == session_id:
             session = cached
+            # Discard any stale events left by an aborted previous turn
+            # (e.g. SESSION_END + sentinel from a disconnected client).
+            # Only needed on reuse — a fresh session always has an empty queue.
+            session.events.flush()
         else:
             if cached is not None:
                 logger.info(
@@ -250,7 +254,6 @@ def create_app(
         task_id = app.add_async_task("invoke")
         try:
             async with session.invocation_lock:
-                session.events.flush()
                 task = asyncio.create_task(
                     run_entry_agent(
                         session.resolved,
