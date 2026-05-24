@@ -12,6 +12,10 @@ from ..types import (
     AccessDeniedError,
     AgentCoreClientError,
     AgentInput,
+    ConflictError,
+    InvalidRequestError,
+    RetryableConflictError,
+    SessionNotFoundError,
     ThrottledError,
 )
 
@@ -64,6 +68,10 @@ def parse_sse_line(text: str) -> StreamEvent | None:
 _ERROR_MAP: dict[str, type[AgentCoreClientError]] = {
     "AccessDeniedException": AccessDeniedError,
     "ThrottlingException": ThrottledError,
+    "ResourceNotFoundException": SessionNotFoundError,
+    "ValidationException": InvalidRequestError,
+    "ConflictException": ConflictError,
+    "RetryableConflictException": RetryableConflictError,
 }
 
 

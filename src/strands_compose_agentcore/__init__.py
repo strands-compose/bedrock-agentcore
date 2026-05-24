@@ -8,7 +8,6 @@ discover, or call ``app.run()`` for local development.
 Example::
 
     from pathlib import Path
-
     from strands_compose_agentcore import create_app
 
     app = create_app(Path(__file__).parent / "config.yaml")
@@ -17,20 +16,24 @@ Example::
 from __future__ import annotations
 
 from .app import create_app
-from .client import AgentCoreClient, LocalClient
+from .client import AgentCoreClient, LocalClient, StopSessionResult
 from .media import document, image, reply, text
 from .types import (
     AccessDeniedError,
     AgentCoreClientError,
     AgentInput,
     ClientConnectionError,
+    ConflictError,
     ContentBlock,
     DocumentBlock,
     DocumentFormat,
     ImageBlock,
     ImageFormat,
+    InvalidRequestError,
     ReplyBlock,
+    RetryableConflictError,
     RetryConfig,
+    SessionNotFoundError,
     TextBlock,
     ThrottledError,
 )
@@ -41,14 +44,19 @@ __all__ = [
     "AgentCoreClientError",
     "AgentInput",
     "ClientConnectionError",
+    "ConflictError",
     "ContentBlock",
     "DocumentBlock",
     "DocumentFormat",
     "ImageBlock",
     "ImageFormat",
+    "InvalidRequestError",
     "LocalClient",
     "ReplyBlock",
+    "RetryableConflictError",
     "RetryConfig",
+    "SessionNotFoundError",
+    "StopSessionResult",
     "TextBlock",
     "ThrottledError",
     "create_app",
