@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from strands_compose import EventQueue
+from strands_compose.types import EventType
 
 from strands_compose_agentcore.app import create_app
 from strands_compose_agentcore.session import SessionState, run_entry_agent
@@ -154,7 +155,10 @@ class TestInvokeHappyPath:
         ):
             results = [item async for item in invoke({"prompt": "hello"})]
 
-        assert results == [{"type": "TOKEN"}, {"type": "COMPLETE"}]
+        assert results[0] == {"type": "TOKEN"}
+        assert results[1] == {"type": "COMPLETE"}
+        assert len(results) == 3
+        assert results[2]["type"] == EventType.SESSION_END
 
 
 class TestInvokePromptValidation:
@@ -454,8 +458,9 @@ class TestRunEntryAgent:
 
         await run_entry_agent(resolved, events, "hi")
 
-        # After run_entry_agent, get() should return None (sentinel)
-        result = await events.get()
+        # close() emits SESSION_END before the sentinel; drain past it
+        while (result := await events.get()) is not None:
+            pass
         assert result is None
 
     @pytest.mark.asyncio
@@ -481,10 +486,12 @@ class TestRunEntryAgent:
 
         await run_entry_agent(resolved, events, "hi")
 
-        # Drain the error event, then sentinel
+        # Drain the error event, then SESSION_END, then sentinel
         err = await events.get()
-        sentinel = await events.get()
         assert err is not None
+        assert err.type == "error"
+        while (sentinel := await events.get()) is not None:
+            pass
         assert sentinel is None
 
     @pytest.mark.asyncio
@@ -497,8 +504,9 @@ class TestRunEntryAgent:
         with pytest.raises(asyncio.CancelledError):
             await run_entry_agent(resolved, events, "hi")
 
-        # events.close() still ran in finally
-        result = await events.get()
+        # events.close() still ran in finally; drain past SESSION_END to sentinel
+        while (result := await events.get()) is not None:
+            pass
         assert result is None
 
     @pytest.mark.asyncio
@@ -559,6 +567,7 @@ class TestRunEntryAgent:
 
         await run_entry_agent(resolved, events, "hi", invocation_timeout=None)
 
-        # No error event — only the sentinel
-        result = await events.get()
+        # No error event — drain past SESSION_END to sentinel
+        while (result := await events.get()) is not None:
+            pass
         assert result is None
