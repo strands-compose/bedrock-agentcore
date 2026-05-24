@@ -24,21 +24,31 @@ _SERVER_POLL_INTERVAL = 0.5
 def cmd_dev(args: argparse.Namespace) -> None:
     """Handle the ``dev`` subcommand.
 
+    Parses the ``--config`` value as a comma-separated list of paths so
+    users can compose multiple YAML files::
+
+        sca dev --config base.yaml,agents.yaml,tools.yaml
+
+    A single path (no comma) continues to work exactly as before.
+
     Args:
         args: Parsed CLI arguments (config, port, session_id).
 
     Raises:
-        CLIError: Config file not found.
+        CLIError: One or more config files not found.
     """
-    config_path = args.config or "config.yaml"
-    if not Path(config_path).is_file():
-        raise CLIError(f"Error: config not found: {config_path}")
+    raw = args.config or "config.yaml"
+    paths = [p.strip() for p in raw.split(",") if p.strip()]
+    for p in paths:
+        if not Path(p).is_file():
+            raise CLIError(f"Error: config not found: {p}")
 
-    run_dev(config_path, port=args.port, session_id=args.session_id)
+    config: str | list[str | Path] = paths[0] if len(paths) == 1 else list(paths)
+    run_dev(config, port=args.port, session_id=args.session_id)
 
 
 def run_dev(
-    config: str | Path,
+    config: str | Path | list[str | Path],
     *,
     session_id: str | None = None,
     port: int = 8080,
@@ -50,7 +60,9 @@ def run_dev(
     The daemon thread auto-terminates when the process exits.
 
     Args:
-        config: Path to strands-compose YAML config file.
+        config: Path or list of paths to strands-compose YAML config
+            file(s).  A list is merged by ``load_config`` in
+            strands-compose before the app is created.
         port: Port for the HTTP server.
         session_id: Session ID for the REPL client.  When ``None``
             (the default), ``LocalClient`` uses ``DEFAULT_SESSION_ID``.

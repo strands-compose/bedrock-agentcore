@@ -52,7 +52,12 @@ def _build_parser() -> argparse.ArgumentParser:
     dev_parser.add_argument(
         "--config",
         default=None,
-        help="Path to strands-compose YAML config (default: ./config.yaml).",
+        help=(
+            "Path(s) to strands-compose YAML config. "
+            "Separate multiple files with ',' "
+            "(e.g. base.yaml,agents.yaml). "
+            "Default: ./config.yaml."
+        ),
     )
     dev_parser.add_argument(
         "--port",

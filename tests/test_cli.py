@@ -217,6 +217,58 @@ class TestCmdDev:
             cmd_dev(args)
         assert "config not found: missing.yaml" in exc_info.value.message
 
+    @patch("strands_compose_agentcore.cli.dev.run_dev")
+    def test_single_config_passes_string_to_run_dev(
+        self, mock_run_dev: MagicMock, tmp_path: Path
+    ) -> None:
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("name: test")
+        args = argparse.Namespace(config=str(cfg), port=8080, session_id=None)
+
+        cmd_dev(args)
+
+        mock_run_dev.assert_called_once_with(str(cfg), port=8080, session_id=None)
+
+    @patch("strands_compose_agentcore.cli.dev.run_dev")
+    def test_multiple_configs_passes_list_to_run_dev(
+        self, mock_run_dev: MagicMock, tmp_path: Path
+    ) -> None:
+        cfg1 = tmp_path / "base.yaml"
+        cfg2 = tmp_path / "agents.yaml"
+        cfg1.write_text("name: base")
+        cfg2.write_text("name: agents")
+        args = argparse.Namespace(config=f"{cfg1},{cfg2}", port=8080, session_id=None)
+
+        cmd_dev(args)
+
+        mock_run_dev.assert_called_once_with([str(cfg1), str(cfg2)], port=8080, session_id=None)
+
+    def test_raises_cli_error_when_second_config_missing(self, tmp_path: Path) -> None:
+        cfg1 = tmp_path / "base.yaml"
+        cfg1.write_text("name: base")
+        args = argparse.Namespace(
+            config=f"{cfg1},{tmp_path / 'missing.yaml'}", port=8080, session_id=None
+        )
+
+        with pytest.raises(CLIError) as exc_info:
+            cmd_dev(args)
+        assert "config not found" in exc_info.value.message
+        assert "missing.yaml" in exc_info.value.message
+
+    @patch("strands_compose_agentcore.cli.dev.run_dev")
+    def test_whitespace_around_commas_is_stripped(
+        self, mock_run_dev: MagicMock, tmp_path: Path
+    ) -> None:
+        cfg1 = tmp_path / "base.yaml"
+        cfg2 = tmp_path / "tools.yaml"
+        cfg1.write_text("name: base")
+        cfg2.write_text("name: tools")
+        args = argparse.Namespace(config=f" {cfg1} , {cfg2} ", port=8080, session_id=None)
+
+        cmd_dev(args)
+
+        mock_run_dev.assert_called_once_with([str(cfg1), str(cfg2)], port=8080, session_id=None)
+
 
 # ---------------------------------------------------------------------------
 # dev — _port_in_use
