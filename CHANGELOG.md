@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## v0.3.0 (2026-05-24)
+
+### Feat
+
+- **cli**: support multiple config files in dev command (#13)
+- **client**: add stop_session to AgentCoreClient (#12)
+
+### Refactor
+
+- **session**: decouple invocation streaming and harden concurrency guard (#11)
+
 ## v0.2.1 (2026-05-22)
 
 ### Fix
