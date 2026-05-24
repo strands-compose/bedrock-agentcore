@@ -129,9 +129,9 @@ class TestInvokeHappyPath:
         events = EventQueue(queue)
 
         event1 = MagicMock()
-        event1.asdict.return_value = {"type": "TOKEN"}
+        event1.asdict.return_value = {"type": EventType.TOKEN}
         event2 = MagicMock()
-        event2.asdict.return_value = {"type": "COMPLETE"}
+        event2.asdict.return_value = {"type": EventType.COMPLETE}
 
         async def _fake_run_with_events(
             resolved: object,
@@ -155,10 +155,11 @@ class TestInvokeHappyPath:
         ):
             results = [item async for item in invoke({"prompt": "hello"})]
 
-        assert results[0] == {"type": "TOKEN"}
-        assert results[1] == {"type": "COMPLETE"}
-        assert len(results) == 3
-        assert results[2]["type"] == EventType.SESSION_END
+        assert results[0]["type"] == EventType.SESSION_START
+        assert results[1]["type"] == EventType.TOKEN
+        assert results[2]["type"] == EventType.COMPLETE
+        assert results[3]["type"] == EventType.SESSION_END
+        assert len(results) == 4
 
 
 class TestInvokePromptValidation:

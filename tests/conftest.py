@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from unittest.mock import MagicMock
+from collections.abc import AsyncIterator, Generator
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 # ---------------------------------------------------------------------------
 # Factory helpers — used by both test_app.py and test_app_invoke.py
@@ -37,3 +39,16 @@ async def empty_stream(*_args: object, **_kwargs: object) -> AsyncIterator[None]
     """Async generator that yields nothing — used as a stream_invocation stub."""
     return
     yield  # noqa: RET504
+
+
+# ---------------------------------------------------------------------------
+# Autouse fixture — patches build_manifest for all invoke-path tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _patch_build_manifest() -> Generator[MagicMock, None, None]:
+    """Patch build_manifest in app.py so MagicMock resolved configs don't fail Pydantic validation."""
+    with patch("strands_compose_agentcore.app.build_manifest") as mock:
+        mock.return_value = MagicMock()
+        yield mock
