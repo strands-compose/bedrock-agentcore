@@ -7,7 +7,11 @@ by external code.
 from __future__ import annotations
 
 import sys
-from typing import TextIO
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, TextIO
+
+from strands_compose import AppConfig, ResolvedInfra, StreamEvent, load_config, resolve_infra
 
 # AgentCore session ID length constraints.
 _MIN_SESSION_ID_LENGTH = 33
@@ -54,3 +58,66 @@ def validate_session_id(session_id: str | None) -> None:
             "AgentCore allows at most %d characters."
             % (session_id[:20], length, _MAX_SESSION_ID_LENGTH)
         )
+
+
+def error_event(message: str, **extra: Any) -> StreamEvent:
+    """Build an error StreamEvent.
+
+    Args:
+        message: Human-readable error text. Stored verbatim in
+            ``data["message"]``.
+        **extra: Additional key-value pairs merged into ``data``.
+
+    Returns:
+        A ``StreamEvent`` with ``type="error"`` and an empty
+        ``agent_name``.  Call ``.asdict()`` to obtain the JSON-friendly
+        form yielded from the ``/invocations`` entrypoint.
+    """
+    data: dict[str, Any] = {"message": message}
+    data.update(extra)
+    return StreamEvent(
+        type="error",
+        agent_name="",
+        timestamp=datetime.now(timezone.utc),
+        data=data,
+    )
+
+
+def prepare_app_state(
+    config: str | Path | list[str | Path] | AppConfig,
+    infra: ResolvedInfra | None,
+) -> tuple[AppConfig, ResolvedInfra]:
+    """Resolve the polymorphic config argument into AppConfig + infra.
+
+    - If ``config`` is ``str``, ``Path``, or ``list``, calls
+      ``load_config(config)``; otherwise uses ``config`` directly.
+    - Validates that ``app_config.entry`` is set, raising ``ValueError``
+      with the exact existing message.
+    - If ``infra`` is ``None``, calls ``resolve_infra(app_config)`` and
+      returns the result; otherwise returns ``infra`` unchanged.
+
+    Args:
+        config: YAML file path, raw YAML string, list of either, or a
+            pre-built ``AppConfig``.
+        infra: Optional pre-resolved infrastructure.
+
+    Returns:
+        ``(AppConfig, ResolvedInfra)``.
+
+    Raises:
+        ValueError: ``app_config.entry`` is ``None`` or empty.
+    """
+    if isinstance(config, (str, Path, list)):
+        app_config = load_config(config)
+    else:
+        app_config = config
+
+    if not getattr(app_config, "entry", None):
+        raise ValueError(
+            "config has no 'entry' defined - set 'entry: <agent_name>' in your YAML config"
+        )
+
+    if infra is None:
+        infra = resolve_infra(app_config)
+
+    return app_config, infra

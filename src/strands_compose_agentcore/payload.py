@@ -78,6 +78,7 @@ def parse_payload(
 
     if "prompt" not in payload:
         raise MultimodalPayloadError("missing required field: 'prompt'")
+
     value = payload["prompt"]
 
     if isinstance(value, str):

@@ -1,18 +1,16 @@
-"""Session lifecycle — resolve agents, stream invocations.
+"""Session lifecycle — resolve agents, run entry agent invocations.
 
 Manages the per-session state: lazy agent resolution via
-``load_session()`` and the streaming invocation loop that drains
-the ``EventQueue`` while the entry agent runs.
+``load_session()`` and the module-level ``run_entry_agent`` coroutine
+that drives the entry agent and places events on the ``EventQueue``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
-from contextlib import suppress
+import math
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 
 from strands.types.agent import AgentInput
 from strands_compose import (
@@ -20,9 +18,10 @@ from strands_compose import (
     EventQueue,
     ResolvedConfig,
     ResolvedInfra,
-    StreamEvent,
     load_session,
 )
+
+from ._utils import error_event
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +33,9 @@ class SessionState:
     Args:
         resolved: Fully resolved config with agents and entry point.
         events: Event queue wired to all agents via hooks.
+        session_id: The AgentCore runtime session ID this state was
+            resolved for.  Used by the cache-decision logic to detect
+            whether an incoming request matches the cached session.
         invocation_lock: Prevents concurrent agent invocations within
             the same session.  AgentCore Runtime allocates one microVM
             per session, but nothing prevents the caller from sending
@@ -42,6 +44,7 @@ class SessionState:
 
     resolved: ResolvedConfig
     events: EventQueue
+    session_id: str | None = None
     invocation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -63,84 +66,71 @@ def resolve_session(
     resolved = load_session(app_config, infra, session_id=session_id)
     events = resolved.wire_event_queue()
     logger.info("session_id=<%s> | session resolved, agents ready", session_id)
-    return SessionState(resolved=resolved, events=events)
+    return SessionState(resolved=resolved, events=events, session_id=session_id)
 
 
-async def stream_invocation(
+async def run_entry_agent(
     resolved: ResolvedConfig,
     events: EventQueue,
     agent_input: AgentInput,
     *,
     invocation_timeout: float | None = None,
-) -> AsyncIterator[StreamEvent]:
-    """Flush stale events, invoke the entry agent, and yield events.
+) -> None:
+    """Drive the entry agent and place events on the queue.
+
+    Awaits ``resolved.entry.invoke_async(agent_input)``, optionally
+    wrapped in ``asyncio.wait_for`` when ``invocation_timeout`` is set.
+    On timeout or unhandled exception, places exactly one error
+    ``StreamEvent`` on ``events``. Always closes ``events`` in
+    ``finally`` so the consumer's drain loop terminates.
+
+    ``CancelledError``, ``KeyboardInterrupt``, and ``SystemExit`` are
+    not caught and propagate to the caller after the ``finally`` runs.
 
     Args:
-        resolved: Fully resolved config with agents and entry point.
-        events: The wired EventQueue shared across invocations.
-        agent_input: Input passed to the entry agent.  May be a plain
-            string, a ``list[ContentBlock]`` for a multimodal user turn,
-            or a list of interrupt responses.
-        invocation_timeout: Maximum seconds to wait for the agent to
-            finish.  ``None`` means no timeout.
+        resolved: Fully resolved config; ``resolved.entry.invoke_async``
+            is the entry agent.
+        events: The session's wired ``EventQueue``.
+        agent_input: User turn forwarded to the entry agent.
+        invocation_timeout: Maximum seconds to wait. ``None`` means no
+            timeout. Must be a positive finite float when provided.
 
-    Yields:
-        StreamEvent objects as the agent runs.
+    Raises:
+        ValueError: ``invocation_timeout`` is zero, negative, or NaN.
     """
-    events.flush()
-
-    if resolved.entry is None:
-        raise RuntimeError("entry point not set in resolved config")
+    if invocation_timeout is not None and (
+        math.isnan(invocation_timeout) or invocation_timeout <= 0
+    ):
+        raise ValueError(
+            "invocation_timeout must be positive and finite, got <%s>" % invocation_timeout
+        )
 
     input_kind = type(agent_input).__name__
 
-    async def _run() -> None:
-        try:
-            coro = resolved.entry.invoke_async(agent_input)  # ty: ignore[invalid-argument-type]
-            if invocation_timeout is not None:
-                await asyncio.wait_for(coro, timeout=invocation_timeout)
-            else:
-                await coro
-        except asyncio.TimeoutError:
-            logger.error(
-                "input_kind=<%s>, timeout=<%s> | agent invocation timed out",
-                input_kind,
-                invocation_timeout,
-            )
-            events.put_event(
-                StreamEvent(
-                    type="error",
-                    agent_name="",
-                    timestamp=datetime.now(tz=timezone.utc),
-                    data={
-                        "message": "agent invocation timed out after %s seconds"
-                        % invocation_timeout
-                    },
-                )
-            )
-        except Exception:
-            logger.exception("input_kind=<%s> | agent invocation failed", input_kind)
-            events.put_event(
-                StreamEvent(
-                    type="error",
-                    agent_name="",
-                    timestamp=datetime.now(tz=timezone.utc),
-                    data={"message": "internal error during agent invocation"},
-                )
-            )
-        finally:
-            await events.close()
-
-    task = asyncio.create_task(_run())
-    completed_stream = False
     try:
-        while (event := await events.get()) is not None:
-            yield event
-        completed_stream = True
-    finally:
-        if completed_stream:
-            await task
+        coro = resolved.entry.invoke_async(agent_input)  # ty: ignore
+        if invocation_timeout is not None:
+            await asyncio.wait_for(coro, timeout=invocation_timeout)
         else:
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
+            await coro
+    except asyncio.TimeoutError:
+        logger.error(
+            "input_kind=<%s>, timeout=<%s> | agent invocation timed out",
+            input_kind,
+            invocation_timeout,
+        )
+        events.put_event(
+            error_event("Agent invocation timed out after %s seconds" % invocation_timeout)
+        )
+    except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as e:
+        logger.exception("input_kind=<%s> | agent invocation failed", input_kind)
+        events.put_event(
+            error_event(
+                "internal error during agent invocation",
+                error=str(e),
+            )
+        )
+    finally:
+        await events.close()
