@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## v0.4.0 (2026-05-24)
+
+### Feat
+
+- **app**: emit SESSION_START and SESSION_END on every invocation (#15)
+
 ## v0.3.1 (2026-05-24)
 
 ### Fix
