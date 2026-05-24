@@ -287,6 +287,6 @@ sca client remote --arn <ARN> --region <REGION>
 
 ## Next
 
-For client integration patterns (Python client, CLI REPL, FastAPI), see [Chapter 07 (The Client)](../../docs/Chapter_07.md).
+For client integration patterns (Python client, CLI REPL, FastAPI), see [Chapter 07 (The Client)](../../docs/Chapter_07.md). To stop a running session from outside the pod, see [`stop_session`](../../docs/Chapter_07.md#stop_session).
 
 For advanced deployment topics (VPC, containers, CDK customization, observability), see the [docs](../../docs/README.md) — specifically [Chapter 06 (Deployment)](../../docs/Chapter_06.md) and [Chapter 08 (Advanced Topics)](../../docs/Chapter_08.md).

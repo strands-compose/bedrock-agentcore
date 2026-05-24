@@ -24,10 +24,10 @@ Example::
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
 
@@ -38,15 +38,12 @@ from starlette.types import StatelessLifespan
 from strands_compose import (
     AppConfig,
     ResolvedInfra,
-    StreamEvent,
-    load_config,
-    resolve_infra,
 )
 from strands_compose.startup import validate_mcp
 
-from ._utils import validate_session_id
+from ._utils import error_event, prepare_app_state, validate_session_id
 from .payload import MultimodalPayloadError, parse_payload
-from .session import SessionState, resolve_session, stream_invocation
+from .session import resolve_session, run_entry_agent
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +84,6 @@ def _make_lifespan(
             app.state.app_config = app_config
             app.state.infra = infra
             app.state.session = None  # lazily populated on first invoke
-            app.state.session_id = None  # bound on first invoke
 
             logger.info("infrastructure ready, waiting for first invocation")
             yield
@@ -152,23 +148,7 @@ def create_app(
     Returns:
         Configured BedrockAgentCoreApp ready to run.
     """
-    # Resolve config from path/string if needed.
-    if isinstance(config, (str, Path, list)):
-        app_config = load_config(config)
-    else:
-        app_config = config
-
-    # Validate that an entry point is defined.
-    if not getattr(app_config, "entry", None):
-        raise ValueError(
-            "config has no 'entry' defined — set 'entry: <agent_name>' in your YAML config"
-        )
-
-    # Resolve infrastructure if not provided.
-    if infra is None:
-        infra = resolve_infra(app_config)
-
-    _invocation_timeout = invocation_timeout  # capture for closure
+    app_config, infra = prepare_app_state(config, infra)
 
     app = BedrockAgentCoreApp(
         lifespan=_make_lifespan(app_config, infra),
@@ -217,12 +197,7 @@ def create_app(
             )
         except MultimodalPayloadError as exc:
             logger.warning("payload rejected | %s", exc)
-            yield StreamEvent(
-                type="error",
-                agent_name="",
-                timestamp=datetime.now(tz=timezone.utc),
-                data={"message": str(exc)},
-            ).asdict()
+            yield error_event(str(exc)).asdict()
             return
 
         session_id = BedrockAgentCoreContext.get_session_id()
@@ -231,58 +206,71 @@ def create_app(
             validate_session_id(session_id)
         except ValueError as exc:
             logger.warning("session_id=<%s> | %s", session_id, exc)
-            yield StreamEvent(
-                type="error",
-                agent_name="",
-                timestamp=datetime.now(tz=timezone.utc),
-                data={"message": str(exc)},
-            ).asdict()
+            yield error_event(str(exc)).asdict()
             return
 
-        # Resolve session first (sync — no await, no context switch).
-        session: SessionState | None = app.state.session
-        if session is None or app.state.session_id != session_id:
-            if app.state.session_id is not None:
+        # Snapshot the cached session once.  asyncio is single-threaded,
+        # so the snapshot stays valid until we explicitly reassign
+        # ``app.state.session`` below.
+        cached = app.state.session
+
+        # Reject if a prior invocation is still running.  The lock
+        # lives on the cached SessionState — the one currently loaded
+        # into shared infrastructure (MCP, models).  A new session_id
+        # arriving mid-invocation is rejected too: only one session
+        # can occupy the runtime at a time.
+        #
+        # SAFETY: no await exists between this check and the
+        # ``async with session.invocation_lock`` acquire below, so no
+        # other coroutine can flip the lock state in between.
+        if cached is not None and cached.invocation_lock.locked():
+            logger.warning(
+                "session_id=<%s>, busy_session_id=<%s> | invocation rejected, agent already running",
+                session_id,
+                cached.session_id,
+            )
+            yield error_event("Agent is already running, try again later").asdict()
+            return
+
+        if cached is not None and cached.session_id == session_id:
+            session = cached
+        else:
+            if cached is not None:
                 logger.info(
                     "session_id=<%s> | new session replaces previous session_id=<%s>",
                     session_id,
-                    app.state.session_id,
+                    cached.session_id,
                 )
-            session = resolve_session(
-                app.state.app_config,
-                app.state.infra,
-                session_id,
-            )
+            session = resolve_session(app.state.app_config, app.state.infra, session_id)
             app.state.session = session
-            app.state.session_id = session_id
 
-        # SAFETY: asyncio is single-threaded.  No await exists between
-        # locked() and the async-with acquire below, so no other
-        # coroutine can acquire the lock in between.
-        if session.invocation_lock.locked():
-            logger.warning(
-                "session_id=<%s> | invocation rejected, agent already running",
-                session_id,
-            )
-            yield StreamEvent(
-                type="error",
-                agent_name="",
-                timestamp=datetime.now(tz=timezone.utc),
-                data={"message": "agent is already running, try again later"},
-            ).asdict()
-            return
-
+        # Register the invocation as an active task so /ping returns
+        # HEALTHY_BUSY while the agent is running, signalling AgentCore
+        # Runtime to back off rather than send another request.
         task_id = app.add_async_task("invoke")
         try:
             async with session.invocation_lock:
-                stream = stream_invocation(
-                    session.resolved,
-                    session.events,
-                    agent_input,
-                    invocation_timeout=_invocation_timeout,
+                session.events.flush()
+                task = asyncio.create_task(
+                    run_entry_agent(
+                        session.resolved,
+                        session.events,
+                        agent_input,
+                        invocation_timeout=invocation_timeout,
+                    )
                 )
-                async for event in stream:
-                    yield event.asdict()
+                completed = False
+                try:
+                    while (event := await session.events.get()) is not None:
+                        yield event.asdict()
+                    completed = True
+                finally:
+                    if completed:
+                        await task
+                    else:
+                        task.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await task
         finally:
             app.complete_async_task(task_id)
 

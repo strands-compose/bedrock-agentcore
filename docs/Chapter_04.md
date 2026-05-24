@@ -51,6 +51,8 @@ Client (LocalClient or AgentCoreClient)
 
 Between turns, the event queue is flushed to discard any stale events from the previous invocation.
 
+> **Disconnect semantics.** When a client closes the SSE connection mid-stream, the in-pod async cancellation machinery inside `invoke` does **not** propagate to the running entry agent. AgentCore Runtime does not forward the TCP disconnect into the microVM, so the agent continues running to completion and S3 session state is fully persisted. The local `task.cancel()` path is dead code under this disconnect scenario. The only documented way to stop a running session from outside the pod is [`AgentCoreClient.stop_session()`](Chapter_07.md#stop_session). See [Session lifecycle and the AgentCore Runtime control plane](Chapter_07.md#session-lifecycle-and-the-agentcore-runtime-control-plane) for a full explanation of the request-flow chain.
+
 ### Event Types
 
 Events are `StreamEvent` objects defined by [strands-compose](https://github.com/strands-compose/sdk-python). Each event carries a `type`, the `agent_name` that produced it, a UTC `timestamp`, and a type-specific `data` dict.
