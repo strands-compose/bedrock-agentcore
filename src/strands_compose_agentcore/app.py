@@ -39,6 +39,7 @@ from strands_compose import (
     AppConfig,
     ResolvedInfra,
 )
+from strands_compose.manifest import build_manifest
 from strands_compose.startup import validate_mcp
 
 from ._utils import error_event, prepare_app_state, validate_session_id
@@ -234,10 +235,6 @@ def create_app(
 
         if cached is not None and cached.session_id == session_id:
             session = cached
-            # Discard any stale events left by an aborted previous turn
-            # (e.g. SESSION_END + sentinel from a disconnected client).
-            # Only needed on reuse — a fresh session always has an empty queue.
-            session.events.flush()
         else:
             if cached is not None:
                 logger.info(
@@ -247,6 +244,18 @@ def create_app(
                 )
             session = resolve_session(app.state.app_config, app.state.infra, session_id)
             app.state.session = session
+
+        # Flush stale events from any previous turn (including the SESSION_START
+        # emitted by wire_event_queue on a new session, or SESSION_END + sentinel
+        # left over from a cached session) and re-emit SESSION_START so every
+        # invocation cycle begins with a consistent lifecycle sequence.
+        session.events.flush()
+        manifest = build_manifest(
+            session.resolved.agents,
+            session.resolved.orchestrators,
+            session.resolved.entry,
+        )
+        session.events.emit_session_start(manifest)
 
         # Register the invocation as an active task so /ping returns
         # HEALTHY_BUSY while the agent is running, signalling AgentCore
