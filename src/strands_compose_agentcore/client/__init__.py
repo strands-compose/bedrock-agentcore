@@ -18,10 +18,14 @@ from ..types import (
     AccessDeniedError,
     AgentCoreClientError,
     ClientConnectionError,
+    ConflictError,
+    InvalidRequestError,
+    RetryableConflictError,
     RetryConfig,
+    SessionNotFoundError,
     ThrottledError,
 )
-from .agentcore import AgentCoreClient
+from .agentcore import AgentCoreClient, StopSessionResult
 from .local import LocalClient
 from .utils import DEFAULT_SESSION_ID
 
@@ -30,8 +34,13 @@ __all__ = [
     "AgentCoreClient",
     "AgentCoreClientError",
     "ClientConnectionError",
+    "ConflictError",
     "DEFAULT_SESSION_ID",
+    "InvalidRequestError",
     "LocalClient",
+    "RetryableConflictError",
     "RetryConfig",
+    "SessionNotFoundError",
+    "StopSessionResult",
     "ThrottledError",
 ]

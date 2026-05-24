@@ -118,6 +118,88 @@ async with AgentCoreClient(ARN, region="us-west-2") as client:
 
 You can also call `client.close()` manually when the client is no longer needed. In-flight streams finish before the pool is torn down.
 
+### Session lifecycle and the AgentCore Runtime control plane
+
+When you call `client.invoke(...)`, the request travels through the following chain:
+
+**HTTP client → AgentCore Runtime control plane → microVM pod → asyncio event loop → strands entry agent**
+
+The [AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-overview.html) control plane routes each request to the microVM pod assigned to the session, where the strands entry agent runs inside an asyncio event loop. The control plane acts as a one-way bridge: it forwards the request into the pod but does **not** propagate a client TCP disconnect back into the pod. If the HTTP client closes the connection mid-stream (browser tab closed, proxy timeout, `aclose()` on the generator), the agent inside the pod continues running to completion, S3 session state is fully persisted, and `/ping` reports `HEALTHY_BUSY` until the agent finishes.
+
+This means local asyncio cancellation machinery (the `task.cancel()` path in `invoke`) is dead code under the AgentCore Runtime disconnect path — the worker loop never sees the consumer-side abort.
+
+The only AWS-documented mechanism to terminate a running session from outside the pod is the [`StopRuntimeSession` API](https://docs.aws.amazon.com/bedrock-agentcore/latest/APIReference/API_StopRuntimeSession.html), exposed on `AgentCoreClient` as `stop_session()`. See the [`stop_session()`](#stop_session) subsection below.
+
+### stop_session()
+
+Stop a deployed AgentCore runtime session. AWS documents this as instantly terminating the specified session and stopping any ongoing streaming responses.
+
+```python
+from strands_compose_agentcore import AgentCoreClient
+
+client = AgentCoreClient(
+    "arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/my-agent-XXXXXXXXXX",
+    region="us-west-2",
+)
+
+result = await client.stop_session("a" * 33)
+print(result.runtime_session_id, result.status_code)
+```
+
+#### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `session_id` | `str` | required | AgentCore session ID (33–256 chars) |
+| `qualifier` | `str \| None` | `None` | Endpoint alias (e.g. `"prod"`). When `None`, AWS uses `DEFAULT` |
+| `client_token` | `str \| None` | `None` | Idempotency token. When `None`, boto3 auto-populates one |
+
+Returns a `StopSessionResult` with `runtime_session_id: str` and `status_code: int`.
+
+#### Errors
+
+| Exception | Cause |
+|-----------|-------|
+| `ValueError` | Session ID shorter than 33 or longer than 256 characters |
+| `AccessDeniedError` | Caller lacks `bedrock-agentcore:StopRuntimeSession` permission |
+| `ThrottledError` | Request was rate-limited |
+| `SessionNotFoundError` | Session not found or already terminated |
+| `InvalidRequestError` | ARN, session ID, or client token failed service-side validation |
+| `ConflictError` | Session is in an incompatible state |
+| `RetryableConflictError` | Transient conflict; retry with exponential backoff |
+| `AgentCoreClientError` | Any other service error |
+
+#### Graceful shutdown timing
+
+AWS documents that termination can take [up to 15 seconds for graceful shutdown](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-stop-session.html). The `stop_session()` call returns as soon as the [StopRuntimeSession](https://docs.aws.amazon.com/bedrock-agentcore/latest/APIReference/API_StopRuntimeSession.html) API accepts the request — the session may still be winding down for a short window after the call returns. If you need to confirm the session is fully gone before proceeding, poll the session status or wait for the in-flight `invoke()` stream to end.
+
+#### Idempotency
+
+Re-using the same `client_token` for the same session and ARN returns success without re-acting — boto3 handles this transparently and `stop_session()` returns a `StopSessionResult` reflecting the original successful response. If the session has already been terminated, AWS returns `ResourceNotFoundException`, which surfaces as `SessionNotFoundError`. Treat `SessionNotFoundError` as "already stopped, no further action needed":
+
+```python
+from strands_compose_agentcore import SessionNotFoundError
+
+try:
+    await client.stop_session(session_id)
+except SessionNotFoundError:
+    pass  # already stopped — nothing to do
+```
+
+#### IAM permissions
+
+The calling principal requires `bedrock-agentcore:StopRuntimeSession` on the target runtime ARN:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": "bedrock-agentcore:StopRuntimeSession",
+  "Resource": "arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/my-agent-XXXXXXXXXX"
+}
+```
+
+This permission is **not** included in the default AgentCore Runtime execution role used by the pod itself. If you call `stop_session()` from inside the pod, you must attach an explicit IAM policy to the pod's execution role. Typically this permission belongs to the proxy, backend service, or operator tooling that fronts the deployed agent — not the agent pod itself.
+
 ---
 
 ## Integration Patterns

@@ -16,6 +16,7 @@ __all__ = [
     "AgentCoreClientError",
     "AgentInput",
     "ClientConnectionError",
+    "ConflictError",
     "ContentBlock",
     "DOCUMENT_FORMATS",
     "DocumentFormat",
@@ -25,10 +26,13 @@ __all__ = [
     "ImageFormat",
     "ImageBlock",
     "ImageContent",
+    "InvalidRequestError",
     "MediaSource",
     "ReplyBlock",
     "ReplyContent",
+    "RetryableConflictError",
     "RetryConfig",
+    "SessionNotFoundError",
     "TextBlock",
     "ThrottledError",
 ]
@@ -132,6 +136,45 @@ class ThrottledError(AgentCoreClientError):
     """Raised when the request is rate-limited by the service.
 
     Actionable: implement exponential backoff / retry.
+    """
+
+
+class SessionNotFoundError(AgentCoreClientError):
+    """Raised when the target session is not found or already terminated.
+
+    Maps to the AWS ``ResourceNotFoundException`` error code returned by
+    ``StopRuntimeSession`` when the specified session does not exist or has
+    already been terminated.  Callers SHOULD treat this as "already stopped,
+    no further action needed".
+    """
+
+
+class InvalidRequestError(AgentCoreClientError):
+    """Raised when the request contains an invalid parameter.
+
+    Maps to the AWS ``ValidationException`` error code returned by
+    ``StopRuntimeSession`` when the agent runtime ARN, session ID, or client
+    token fails service-side validation.
+    """
+
+
+class ConflictError(AgentCoreClientError):
+    """Raised when the session is in an incompatible state for the operation.
+
+    Maps to the AWS ``ConflictException`` error code returned by
+    ``StopRuntimeSession``.  Callers that also want to handle the retryable
+    variant should catch :class:`RetryableConflictError` (a subclass) or this
+    base class to cover both.
+    """
+
+
+class RetryableConflictError(ConflictError):
+    """Raised when a transient conflict can be resolved by retrying.
+
+    Maps to the AWS ``RetryableConflictException`` error code returned by
+    ``StopRuntimeSession``.  AWS explicitly signals that the caller MAY retry
+    with exponential backoff.  Inherits from :class:`ConflictError` so an
+    ``except ConflictError`` block catches both variants.
     """
 
 

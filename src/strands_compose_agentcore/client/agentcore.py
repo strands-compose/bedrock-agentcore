@@ -22,6 +22,7 @@ import logging
 import random
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from .._utils import validate_session_id
@@ -41,6 +42,21 @@ if TYPE_CHECKING:
     from strands_compose import AnsiRenderer, StreamEvent
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class StopSessionResult:
+    """Result of a successful ``StopRuntimeSession`` call.
+
+    Attributes:
+        runtime_session_id: The session ID that was stopped, as returned
+            by AWS in the ``runtimeSessionId`` response field.
+        status_code: The HTTP status code returned by AWS in the
+            ``statusCode`` response field.
+    """
+
+    runtime_session_id: str
+    status_code: int
 
 
 class AgentCoreClient:
@@ -228,7 +244,123 @@ class AgentCoreClient:
             stream_fn=_stream,
         )
 
+    async def stop_session(
+        self,
+        session_id: str,
+        *,
+        qualifier: str | None = None,
+        client_token: str | None = None,
+    ) -> StopSessionResult:
+        """Stop a deployed AgentCore runtime session via ``StopRuntimeSession``.
+
+        Calls the AWS ``bedrock-agentcore.stop_runtime_session`` data-plane
+        action.  AWS documents this as instantly terminating the specified
+        session and stopping any ongoing streaming responses.  Termination
+        can take up to 15 seconds for graceful shutdown.
+
+        Required IAM permission on the **calling principal**:
+        ``bedrock-agentcore:StopRuntimeSession`` on the target runtime ARN.
+        This permission is **not** included in the default AgentCore Runtime
+        execution role used by the pod itself; calling this method from inside
+        the pod requires an explicit IAM policy attachment.
+
+        Idempotency: re-using a ``client_token`` that boto3 has already seen
+        for this ``(session, ARN)`` pair returns success without re-acting.
+        When AWS reports the session as already terminated
+        (``ResourceNotFoundException``), a :class:`SessionNotFoundError` is
+        raised.  Callers SHOULD treat ``SessionNotFoundError`` as "already
+        stopped, no further action needed".
+
+        Args:
+            session_id: AgentCore session identifier (33-256 chars).
+            qualifier: Optional endpoint alias (for example ``"prod"``).
+                When ``None`` (the default), boto3 omits the parameter and
+                AWS uses ``DEFAULT``.
+            client_token: Optional idempotency token.  When ``None`` (the
+                default), boto3 auto-populates one.  Two calls with the same
+                token for the same session return success without re-acting.
+
+        Returns:
+            :class:`StopSessionResult` with ``runtime_session_id`` and
+            ``status_code`` populated from the boto3 response.
+
+        Raises:
+            ValueError: ``session_id`` is outside the 33-256 char range.
+            AccessDeniedError: Caller lacks
+                ``bedrock-agentcore:StopRuntimeSession``.
+            ThrottledError: Service rate-limited the request.
+            SessionNotFoundError: Session not found or already terminated.
+            InvalidRequestError: ARN, session ID, or client token failed
+                service-side validation.
+            ConflictError: Session is in an incompatible state.
+            RetryableConflictError: Transient conflict; caller MAY retry
+                with exponential backoff.
+            AgentCoreClientError: Any other AWS error code (message
+                formatted as ``[<code>] <message>``).
+        """
+        validate_session_id(session_id)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._executor,
+            self._stop_session_sync,
+            session_id,
+            qualifier,
+            client_token,
+        )
+
     # -- Private helpers -----------------------------------------------------
+
+    def _stop_session_sync(
+        self,
+        session_id: str,
+        qualifier: str | None,
+        client_token: str | None,
+    ) -> StopSessionResult:
+        """Execute the synchronous boto3 ``stop_runtime_session`` call.
+
+        Translates botocore ``ClientError`` into typed exceptions.
+        Called via ``run_in_executor`` from :meth:`stop_session`.
+
+        Args:
+            session_id: Validated AgentCore session identifier.
+            qualifier: Optional endpoint alias; omitted from the boto3
+                call when ``None``.
+            client_token: Optional idempotency token; omitted from the
+                boto3 call when ``None`` so boto3 auto-populates one.
+
+        Returns:
+            :class:`StopSessionResult` populated from the boto3 response.
+
+        Raises:
+            AgentCoreClientError: Translated from botocore ``ClientError``.
+        """
+        from botocore.exceptions import ClientError
+
+        kwargs: dict[str, Any] = {
+            "agentRuntimeArn": self.agent_runtime_arn,
+            "runtimeSessionId": session_id,
+        }
+        if qualifier is not None:
+            kwargs["qualifier"] = qualifier
+        if client_token is not None:
+            kwargs["clientToken"] = client_token
+
+        try:
+            response = self._client.stop_runtime_session(**kwargs)
+        except ClientError as exc:
+            raise translate_error(exc) from exc
+
+        status_code = int(response.get("statusCode", 0))
+        runtime_session_id = response.get("runtimeSessionId", session_id)
+        logger.info(
+            "session_id=<%s>, status_code=<%s> | runtime session stopped",
+            runtime_session_id,
+            status_code,
+        )
+        return StopSessionResult(
+            runtime_session_id=runtime_session_id,
+            status_code=status_code,
+        )
 
     def _invoke_sync(
         self,
