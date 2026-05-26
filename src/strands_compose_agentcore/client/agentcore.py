@@ -23,7 +23,7 @@ import random
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 from .._utils import validate_session_id
 from ..types import AgentInput, RetryConfig, ThrottledError
@@ -125,12 +125,40 @@ class AgentCoreClient:
 
     # -- Public API ----------------------------------------------------------
 
+    @overload
+    def invoke(
+        self,
+        agent_input: AgentInput,
+        *,
+        session_id: str,
+        raw_output: Literal[True],
+    ) -> AsyncGenerator[str, None]: ...
+
+    @overload
+    def invoke(
+        self,
+        agent_input: AgentInput,
+        *,
+        session_id: str,
+        raw_output: Literal[False] = ...,
+    ) -> AsyncGenerator[StreamEvent, None]: ...
+
+    @overload
+    def invoke(
+        self,
+        agent_input: AgentInput,
+        *,
+        session_id: str,
+        raw_output: bool,
+    ) -> AsyncGenerator[StreamEvent | str, None]: ...
+
     async def invoke(
         self,
         agent_input: AgentInput,
         *,
         session_id: str,
-    ) -> AsyncGenerator[StreamEvent, None]:
+        raw_output: bool = False,
+    ) -> AsyncGenerator[StreamEvent | str, None]:
         """Invoke the agent runtime and yield streaming events.
 
         Sends a JSON payload to the deployed agent, then reads the SSE
@@ -149,9 +177,23 @@ class AgentCoreClient:
         Args:
             agent_input: The user turn to send (see shapes above).
             session_id: AgentCore session identifier (33-256 chars).
+            raw_output: When ``True``, yield raw decoded SSE lines
+                (``str``) instead of parsed
+                :class:`~strands_compose.StreamEvent` objects.  Blank
+                and keepalive lines are still filtered.  Defaults to
+                ``False``.
+
+                **Note:** :meth:`repl` and all CLI commands always use
+                ``raw_output=False`` (the default) because they depend
+                on :class:`~strands_compose.StreamEvent` objects for
+                terminal rendering.  Never pass ``raw_output=True`` to
+                those callers.
 
         Yields:
-            StreamEvent objects parsed from the response stream.
+            :class:`~strands_compose.StreamEvent` objects parsed from
+            the response stream when ``raw_output=False`` (default), or
+            raw UTF-8 decoded SSE lines (``str``) when
+            ``raw_output=True``.
 
         Raises:
             ValueError: Session ID outside the 33-256 char range, or
@@ -204,9 +246,13 @@ class AgentCoreClient:
                 if line is None:
                     break
                 text = line.decode("utf-8").strip()
-                event = parse_sse_line(text)
-                if event is not None:
-                    yield event
+                if raw_output:
+                    if text:
+                        yield text
+                else:
+                    event = parse_sse_line(text)
+                    if event is not None:
+                        yield event
         finally:
             close = getattr(stream_body, "close", None)
             if callable(close):
