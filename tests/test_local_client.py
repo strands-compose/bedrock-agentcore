@@ -192,6 +192,101 @@ class TestLocalClientInvokeRawOutput:
         assert isinstance(results[0], StreamEvent)
 
 
+class TestLocalClientAsyncInvoke:
+    def _make_response_cm(self, lines: list[bytes]) -> MagicMock:
+        response = MagicMock()
+        response.__iter__.return_value = iter(lines)
+        response_cm = MagicMock()
+        response_cm.__enter__.return_value = response
+        response_cm.__exit__.return_value = False
+        return response_cm
+
+    async def test_async_invoke_yields_events_and_skips_noise(self) -> None:
+        client = LocalClient(url="http://localhost:9000/invocations", session_id="sess-1")
+        response_cm = self._make_response_cm(
+            [
+                b"\n",
+                b"not-json\n",
+                _event_line("token", {"text": "hi"}),
+            ]
+        )
+
+        with patch(
+            "strands_compose_agentcore.client.local.urlopen", return_value=response_cm
+        ) as mock_urlopen:
+            events = []
+            async for event in client.async_invoke("hello"):
+                events.append(event)
+
+        assert len(events) == 1
+        assert events[0].type == "token"
+        assert events[0].data == {"text": "hi"}
+
+        request = mock_urlopen.call_args.args[0]
+        assert request.full_url == "http://localhost:9000/invocations"
+        assert request.get_method() == "POST"
+        assert request.data == b'{"prompt": "hello"}'
+        assert request.headers["X-amzn-bedrock-agentcore-runtime-session-id"] == "sess-1"
+
+    async def test_async_invoke_overrides_session_id(self) -> None:
+        client = LocalClient(session_id="default-sess")
+        response_cm = self._make_response_cm([_event_line("complete")])
+
+        with patch(
+            "strands_compose_agentcore.client.local.urlopen", return_value=response_cm
+        ) as mock_urlopen:
+            async for _ in client.async_invoke("hello", session_id="override-sess"):
+                pass
+
+        request = mock_urlopen.call_args.args[0]
+        assert request.headers["X-amzn-bedrock-agentcore-runtime-session-id"] == "override-sess"
+
+    async def test_async_invoke_raises_connection_error(self) -> None:
+        client = LocalClient(url="http://localhost:7777/invocations")
+
+        with (
+            patch(
+                "strands_compose_agentcore.client.local.urlopen",
+                side_effect=URLError("connection refused"),
+            ),
+            pytest.raises(
+                ClientConnectionError,
+                match="Could not connect to http://localhost:7777/invocations",
+            ),
+        ):
+            async for _ in client.async_invoke("hello"):
+                pass
+
+    async def test_async_invoke_raw_output_yields_str_lines(self) -> None:
+        client = LocalClient()
+        response_cm = self._make_response_cm(
+            [
+                _event_line("agent_start"),
+                _event_line("token", {"text": "hi"}),
+            ]
+        )
+
+        with patch("strands_compose_agentcore.client.local.urlopen", return_value=response_cm):
+            results = []
+            async for item in client.async_invoke("hello", raw_output=True):
+                results.append(item)
+
+        assert len(results) == 2
+        assert all(isinstance(r, str) for r in results)
+
+    async def test_async_invoke_rejects_empty_list(self) -> None:
+        client = LocalClient()
+        with pytest.raises(ValueError, match="invalid agent_input"):
+            async for _ in client.async_invoke([]):
+                pass
+
+    async def test_async_invoke_rejects_wrong_type(self) -> None:
+        client = LocalClient()
+        with pytest.raises(ValueError, match="invalid agent_input"):
+            async for _ in client.async_invoke(123):  # ty: ignore
+                pass
+
+
 class TestLocalClientRepl:
     def test_repl_renders_stream_and_flushes(self) -> None:
         client = LocalClient()
