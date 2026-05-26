@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## v0.5.0 (2026-05-26)
+
+### Feat
+
+- **client**: add AsyncLocalClient with httpx native async streaming (#19)
+- **client**: add raw_output flag to AgentCoreClient and LocalClient invoke()
+
 ## v0.4.0 (2026-05-24)
 
 ### Feat
