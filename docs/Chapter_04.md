@@ -46,7 +46,7 @@ EventQueue
     ↓ drained by
 /invocations response (SSE)
     ↓ received by
-Client (LocalClient or AgentCoreClient)
+Client (LocalClient, AsyncLocalClient, or AgentCoreClient)
 ```
 
 Between turns, the event queue is flushed to discard any stale events from the previous invocation.

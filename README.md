@@ -89,7 +89,7 @@ strands-compose-agentcore CLI tools `dev` and `client` use `AnsiRenderer` from s
 
 ### 📡 A client for your apps
 
-`AgentCoreClient` is an async boto3 wrapper that streams SSE events from deployed agents — embed it in FastAPI, Django, Lambda, or background workers. One client instance, safe for concurrent multi-tenant use, with typed errors and a dedicated thread pool.
+`AgentCoreClient` is an async boto3 wrapper that streams SSE events from deployed agents. `LocalClient` (sync) and `AsyncLocalClient` (async, httpx) cover the local development server. All three embed cleanly into FastAPI, Django, Lambda, or background workers — one client instance, safe for concurrent multi-tenant use, with typed errors.
 
 ## How you deploy
 
@@ -239,7 +239,7 @@ Deep dives into every component — architecture, API reference, deployment patt
 | [04 — Session & Streaming](docs/Chapter_04.md) | Per-session lifecycle, event queues, SSE wire protocol |
 | [05 — The CLI](docs/Chapter_05.md) | Every command, every flag, explained |
 | [06 — Deployment](docs/Chapter_06.md) | CodeZip and container paths to AgentCore Runtime |
-| [07 — The Client](docs/Chapter_07.md) | `AgentCoreClient` and `LocalClient` API + integration patterns |
+| [07 — The Client](docs/Chapter_07.md) | `LocalClient`, `AsyncLocalClient`, and `AgentCoreClient` API + integration patterns |
 | [08 — Advanced Topics](docs/Chapter_08.md) | VPC, logging, timeouts, health checks, CDK |
 | [09 — Deployment Strategies](docs/Chapter_09.md) | Individual developers vs enterprise teams — AgentCore CLI, IaC, CI/CD |
 | [Quick Recipes](docs/Quick_Recipes.md) | AWS services reference — tools, packages, and patterns at a glance |

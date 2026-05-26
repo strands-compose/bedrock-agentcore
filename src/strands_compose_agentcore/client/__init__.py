@@ -26,13 +26,14 @@ from ..types import (
     ThrottledError,
 )
 from .agentcore import AgentCoreClient, StopSessionResult
-from .local import LocalClient
+from .local import AsyncLocalClient, LocalClient
 from .utils import DEFAULT_SESSION_ID
 
 __all__ = [
     "AccessDeniedError",
     "AgentCoreClient",
     "AgentCoreClientError",
+    "AsyncLocalClient",
     "ClientConnectionError",
     "ConflictError",
     "DEFAULT_SESSION_ID",

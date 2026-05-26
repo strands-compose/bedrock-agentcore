@@ -16,7 +16,7 @@ Example::
 from __future__ import annotations
 
 from .app import create_app
-from .client import AgentCoreClient, LocalClient, StopSessionResult
+from .client import AgentCoreClient, AsyncLocalClient, LocalClient, StopSessionResult
 from .media import document, image, reply, text
 from .types import (
     AccessDeniedError,
@@ -43,6 +43,7 @@ __all__ = [
     "AgentCoreClient",
     "AgentCoreClientError",
     "AgentInput",
+    "AsyncLocalClient",
     "ClientConnectionError",
     "ConflictError",
     "ContentBlock",
