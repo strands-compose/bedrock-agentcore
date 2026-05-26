@@ -1,10 +1,11 @@
 # Chapter 07 — The Client
 
-strands-compose-agentcore provides two client classes for invoking agents programmatically and a shared REPL for interactive testing. The clients are designed for different contexts — `LocalClient` for local development and `AgentCoreClient` for deployed agents — but both expose the same streaming interface: iterate over `StreamEvent` objects as the agent produces them.
+strands-compose-agentcore provides three client classes for invoking agents programmatically and a shared REPL for interactive testing. The clients are designed for different contexts — `LocalClient` and `AsyncLocalClient` for local development and `AgentCoreClient` for deployed agents — but all expose the same streaming interface: iterate over `StreamEvent` objects as the agent produces them.
 
 | Client | Use Case | Transport | Sync/Async |
 |--------|----------|-----------|------------|
 | `LocalClient` | Local development | HTTP (urllib) | Sync |
+| `AsyncLocalClient` | Local development (async servers) | HTTP (httpx) | Async |
 | `AgentCoreClient` | Deployed agents on [AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/) | [boto3](https://pypi.org/project/boto3/) (AgentCore API) | Async |
 
 ---
@@ -32,11 +33,89 @@ for event in client.invoke("Hello"):
 | `url` | `str` | `http://localhost:8080/invocations` | URL of the `/invocations` endpoint |
 | `session_id` | `str \| None` | `DEFAULT_SESSION_ID` | Session ID sent in the AgentCore header |
 
-The `invoke()` method returns a `Generator[StreamEvent, None, None]`. Pass `session_id` to override the default for a single call. Raises `ClientConnectionError` if the server is unreachable.
+The `invoke()` method is a generator that yields `StreamEvent` objects by default. Pass `raw_output=True` to yield raw SSE lines (`str`) instead — useful when forwarding the stream verbatim (e.g. SSE proxies). Pass `session_id` to override the default for a single call. Raises `ClientConnectionError` if the server is unreachable.
 
 ```python
 client.repl()                          # interactive REPL with colored streaming
 client.repl(session_id="custom")       # override session ID
+```
+
+`LocalClient` supports the `with` statement. The client does not hold persistent connections, so the context manager exists for structural consistency:
+
+```python
+with LocalClient() as client:
+    for event in client.invoke("Hello"):
+        print(event.type, event.data)
+```
+
+### invoke() Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `agent_input` | `str \| ContentBlock \| list[ContentBlock]` | required | User turn |
+| `session_id` | `str \| None` | `None` | Override session ID for this call |
+| `raw_output` | `bool` | `False` | When `True`, yield raw SSE lines (`str`) instead of `StreamEvent` objects |
+
+Returns a `Generator[StreamEvent \| str, None, None]`.
+
+---
+
+## AsyncLocalClient
+
+A native-async client for the local development server. Backed by `httpx.AsyncClient` — no threads are held during streaming. Ideal for async web servers (FastAPI SSE proxies) and async test suites: N concurrent streams become N lightweight coroutines instead of N OS threads.
+
+### Usage
+
+```python
+from strands_compose_agentcore import AsyncLocalClient
+
+client = AsyncLocalClient(
+    url="http://localhost:8080/invocations",                # default
+    session_id="default-session-strands-compose-agentcore",   # default
+)
+
+async for event in client.invoke("Hello"):
+    print(event.type, event.data)
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `url` | `str` | `http://localhost:8080/invocations` | URL of the `/invocations` endpoint |
+| `session_id` | `str \| None` | `DEFAULT_SESSION_ID` | Session ID sent in the AgentCore header |
+| `timeout` | `httpx.Timeout \| None` | `None` | Timeout override. When `None`, uses `connect=5.0` with no read/write/pool timeout so long SSE streams are never cut off |
+
+### invoke() Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `agent_input` | `str \| ContentBlock \| list[ContentBlock]` | required | User turn |
+| `session_id` | `str \| None` | `None` | Override session ID for this call |
+| `raw_output` | `bool` | `False` | When `True`, yield raw SSE lines (`str`) instead of `StreamEvent` objects. Useful for forwarding the stream verbatim (e.g. SSE proxy). |
+
+Returns an `AsyncGenerator[StreamEvent \| str, None]`. Raises `ClientConnectionError` if the server is unreachable.
+
+### Lifecycle
+
+`AsyncLocalClient` owns an `httpx.AsyncClient`. Use the async context manager for automatic cleanup:
+
+```python
+async with AsyncLocalClient() as client:
+    async for event in client.invoke("Hello"):
+        print(event.type, event.data)
+```
+
+Or manage the lifecycle manually:
+
+```python
+client = AsyncLocalClient()
+# ... use client ...
+await client.aclose()  # from async context
+# client.close()       # from sync context (e.g. atexit)
+```
+
+```python
+client.repl()  # interactive REPL
+client.repl(session_id="custom")
 ```
 
 ---
@@ -250,6 +329,32 @@ async def stream(prompt: str, session_id: str):
             yield f"data: {json.dumps(event.asdict())}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+```
+
+### FastAPI with AsyncLocalClient (local dev proxy)
+
+```python
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
+from strands_compose_agentcore import AsyncLocalClient
+
+@asynccontextmanager
+async def lifespan(app):
+    async with AsyncLocalClient("http://localhost:8080/invocations") as client:
+        app.state.local_agent = client
+        yield
+
+app = FastAPI(lifespan=lifespan)
+
+@app.post("/chat")
+async def chat(prompt: str, session_id: str):
+    async def _stream():
+        async for raw_line in app.state.local_agent.invoke(
+            prompt, session_id=session_id, raw_output=True
+        ):
+            yield raw_line + "\n\n"
+    return StreamingResponse(_stream(), media_type="text/event-stream")
 ```
 
 ### AWS Lambda
