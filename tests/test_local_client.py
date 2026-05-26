@@ -131,6 +131,67 @@ class TestLocalClientInvoke:
             next(client.invoke(123))  # ty: ignore
 
 
+class TestLocalClientInvokeRawOutput:
+    def _make_response_cm(self, lines: list[bytes]) -> MagicMock:
+        response = MagicMock()
+        response.__iter__.return_value = iter(lines)
+        response_cm = MagicMock()
+        response_cm.__enter__.return_value = response
+        response_cm.__exit__.return_value = False
+        return response_cm
+
+    def test_raw_output_yields_str_lines(self) -> None:
+        client = LocalClient()
+        response_cm = self._make_response_cm(
+            [
+                _event_line("agent_start"),
+                _event_line("token", {"text": "hi"}),
+            ]
+        )
+        with patch("strands_compose_agentcore.client.local.urlopen", return_value=response_cm):
+            results = list(client.invoke("hello", raw_output=True))
+
+        assert len(results) == 2
+        assert all(isinstance(r, str) for r in results)
+
+    def test_raw_output_skips_blank_lines(self) -> None:
+        client = LocalClient()
+        response_cm = self._make_response_cm(
+            [
+                b"\n",
+                b"  \n",
+                _event_line("token", {"text": "hi"}),
+                b"\n",
+            ]
+        )
+        with patch("strands_compose_agentcore.client.local.urlopen", return_value=response_cm):
+            results = list(client.invoke("hello", raw_output=True))
+
+        assert len(results) == 1
+        assert isinstance(results[0], str)
+        assert "token" in results[0]
+
+    def test_raw_output_does_not_call_parse_sse_line(self) -> None:
+        client = LocalClient()
+        response_cm = self._make_response_cm([_event_line("token", {"text": "hi"})])
+        with (
+            patch("strands_compose_agentcore.client.local.urlopen", return_value=response_cm),
+            patch("strands_compose_agentcore.client.local.parse_sse_line") as mock_parse,
+        ):
+            _ = list(client.invoke("hello", raw_output=True))
+
+        mock_parse.assert_not_called()
+
+    def test_raw_output_false_yields_stream_events(self) -> None:
+        client = LocalClient()
+        response_cm = self._make_response_cm([_event_line("token", {"text": "hi"})])
+        with patch("strands_compose_agentcore.client.local.urlopen", return_value=response_cm):
+            results = list(client.invoke("hello", raw_output=False))
+
+        assert len(results) == 1
+        assert isinstance(results[0], StreamEvent)
+
+
 class TestLocalClientRepl:
     def test_repl_renders_stream_and_flushes(self) -> None:
         client = LocalClient()

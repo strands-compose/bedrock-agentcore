@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, overload
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
@@ -93,12 +93,40 @@ class LocalClient:
         self.url = url
         self.session_id = session_id or DEFAULT_SESSION_ID
 
+    @overload
+    def invoke(
+        self,
+        agent_input: AgentInput,
+        *,
+        session_id: str | None = ...,
+        raw_output: Literal[True],
+    ) -> Generator[str, None, None]: ...
+
+    @overload
+    def invoke(
+        self,
+        agent_input: AgentInput,
+        *,
+        session_id: str | None = ...,
+        raw_output: Literal[False] = ...,
+    ) -> Generator[StreamEvent, None, None]: ...
+
+    @overload
+    def invoke(
+        self,
+        agent_input: AgentInput,
+        *,
+        session_id: str | None = ...,
+        raw_output: bool,
+    ) -> Generator[StreamEvent | str, None, None]: ...
+
     def invoke(
         self,
         agent_input: AgentInput,
         *,
         session_id: str | None = None,
-    ) -> Generator[StreamEvent, None, None]:
+        raw_output: bool = False,
+    ) -> Generator[StreamEvent | str, None, None]:
         """Send an agent input and yield streaming events.
 
         Opens an HTTP connection to the local server and reads SSE
@@ -117,9 +145,23 @@ class LocalClient:
         Args:
             agent_input: The user turn to send (see shapes above).
             session_id: Override the default session ID for this call.
+            raw_output: When ``True``, yield raw decoded SSE lines
+                (``str``) instead of parsed
+                :class:`~strands_compose.StreamEvent` objects.  Blank
+                and keepalive lines are still filtered.  Defaults to
+                ``False``.
+
+                **Note:** :meth:`repl` and all CLI commands always use
+                ``raw_output=False`` (the default) because they depend
+                on :class:`~strands_compose.StreamEvent` objects for
+                terminal rendering.  Never pass ``raw_output=True`` to
+                those callers.
 
         Yields:
-            StreamEvent objects parsed from the SSE response.
+            :class:`~strands_compose.StreamEvent` objects parsed from
+            the SSE response when ``raw_output=False`` (default), or
+            raw UTF-8 decoded SSE lines (``str``) when
+            ``raw_output=True``.
 
         Raises:
             TypeError: ``agent_input`` is not a supported client input type.
@@ -143,9 +185,13 @@ class LocalClient:
             with urlopen(req) as resp:  # noqa: S310  # nosec B310 — local server
                 for raw_line in resp:
                     text = raw_line.decode("utf-8").strip()
-                    event = parse_sse_line(text)
-                    if event is not None:
-                        yield event
+                    if raw_output:
+                        if text:
+                            yield text
+                    else:
+                        event = parse_sse_line(text)
+                        if event is not None:
+                            yield event
         except URLError as exc:
             raise ClientConnectionError(f"Could not connect to {self.url}: {exc.reason}") from exc
 

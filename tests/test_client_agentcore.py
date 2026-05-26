@@ -323,6 +323,73 @@ class TestTranslateError:
         assert "[ValidationException]" in str(result)
 
 
+class TestInvokeRawOutput:
+    @pytest.mark.asyncio
+    async def test_raw_output_yields_str_lines(self, client: AgentCoreClient) -> None:
+        lines = [
+            _make_sse_line("agent_start", "my_agent"),
+            _make_sse_line("token", "my_agent", {"text": "Hello"}),
+        ]
+        body = _make_streaming_body(lines)
+        client._client.invoke_agent_runtime.return_value = {"response": body}
+
+        results = [
+            r async for r in client.invoke("Hi", session_id=_VALID_SESSION_ID, raw_output=True)
+        ]
+
+        assert len(results) == 2
+        assert all(isinstance(r, str) for r in results)
+
+    @pytest.mark.asyncio
+    async def test_raw_output_skips_blank_lines(self, client: AgentCoreClient) -> None:
+        lines = [
+            "",
+            "  ",
+            _make_sse_line("token", "a", {"text": "ok"}),
+            "",
+        ]
+        body = _make_streaming_body(lines)
+        client._client.invoke_agent_runtime.return_value = {"response": body}
+
+        results = [
+            r async for r in client.invoke("Hi", session_id=_VALID_SESSION_ID, raw_output=True)
+        ]
+
+        assert len(results) == 1
+        assert isinstance(results[0], str)
+        assert "token" in results[0]
+
+    @pytest.mark.asyncio
+    async def test_raw_output_does_not_call_parse_sse_line(self, client: AgentCoreClient) -> None:
+        lines = [_make_sse_line("token", "a", {"text": "hi"})]
+        body = _make_streaming_body(lines)
+        client._client.invoke_agent_runtime.return_value = {"response": body}
+
+        with (
+            __import__("unittest.mock", fromlist=["patch"]).patch(
+                "strands_compose_agentcore.client.agentcore.parse_sse_line"
+            ) as mock_parse,
+        ):
+            _ = [
+                r async for r in client.invoke("Hi", session_id=_VALID_SESSION_ID, raw_output=True)
+            ]
+
+        mock_parse.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_raw_output_false_yields_stream_events(self, client: AgentCoreClient) -> None:
+        lines = [_make_sse_line("token", "a", {"text": "hi"})]
+        body = _make_streaming_body(lines)
+        client._client.invoke_agent_runtime.return_value = {"response": body}
+
+        results = [
+            r async for r in client.invoke("Hi", session_id=_VALID_SESSION_ID, raw_output=False)
+        ]
+
+        assert len(results) == 1
+        assert isinstance(results[0], StreamEvent)
+
+
 class TestInvokeRetry:
     @pytest.mark.asyncio
     async def test_retries_on_throttling(self, mock_boto3_session: MagicMock) -> None:
