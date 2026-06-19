@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## v0.6.0 (2026-06-20)
 
+### Fix
+
+- **event-type**: align streamed event type with strands-compose `agent_complete` rename (#26)
+
+  `strands-compose` renamed `EventType.COMPLETE` (`"complete"`) to `EventType.AGENT_COMPLETE`
+  (`"agent_complete"`). All hardcoded event-type references have been updated to match.
+
+### Deps
+
+- bump `strands-compose` to `0.6.0` (#26)
+
+### CI
+
+- bump `actions/checkout` from 6 to 7 (#24)
+- bump `astral-sh/setup-uv` from 8.1.0 to 8.2.0 (#20)
+
+### Breaking Changes
+
+- The streamed agent-completion event type is now `"agent_complete"` instead of `"complete"`.
+  Clients matching on the old value must update to `"agent_complete"`.
+
 ## v0.5.0 (2026-05-26)
 
 ### Feat
