@@ -59,7 +59,7 @@ class TestLocalClientInvoke:
     def test_invoke_overrides_session_id(self) -> None:
         client = LocalClient(session_id="default-sess")
         response = MagicMock()
-        response.__iter__.return_value = iter([_event_line("complete")])
+        response.__iter__.return_value = iter([_event_line("agent_complete")])
         response_cm = MagicMock()
         response_cm.__enter__.return_value = response
         response_cm.__exit__.return_value = False
@@ -90,7 +90,7 @@ class TestLocalClientInvoke:
     def test_invoke_with_content_sends_content_body(self) -> None:
         client = LocalClient(session_id="sess-1")
         response = MagicMock()
-        response.__iter__.return_value = iter([_event_line("complete")])
+        response.__iter__.return_value = iter([_event_line("agent_complete")])
         response_cm = MagicMock()
         response_cm.__enter__.return_value = response
         response_cm.__exit__.return_value = False
@@ -107,7 +107,7 @@ class TestLocalClientInvoke:
     def test_invoke_with_single_block_sends_content_list(self) -> None:
         client = LocalClient(session_id="sess-1")
         response = MagicMock()
-        response.__iter__.return_value = iter([_event_line("complete")])
+        response.__iter__.return_value = iter([_event_line("agent_complete")])
         response_cm = MagicMock()
         response_cm.__enter__.return_value = response
         response_cm.__exit__.return_value = False
@@ -285,7 +285,7 @@ class TestAsyncLocalClientInvoke:
 
     async def test_invoke_overrides_session_id(self) -> None:
         client = AsyncLocalClient(session_id="default-sess")
-        stream_cm = _make_async_stream_cm([_sse_line("complete")])
+        stream_cm = _make_async_stream_cm([_sse_line("agent_complete")])
 
         with patch.object(client._http, "stream", return_value=stream_cm) as mock_stream:
             _ = [event async for event in client.invoke("hello", session_id="override-sess")]
@@ -354,7 +354,7 @@ class TestAsyncLocalClientInvoke:
 
     async def test_invoke_with_content_blocks(self) -> None:
         client = AsyncLocalClient(session_id="sess-1")
-        stream_cm = _make_async_stream_cm([_sse_line("complete")])
+        stream_cm = _make_async_stream_cm([_sse_line("agent_complete")])
         blocks: list[ContentBlock] = [text("describe"), image(b"data", format="png")]
 
         with patch.object(client._http, "stream", return_value=stream_cm) as mock_stream:
