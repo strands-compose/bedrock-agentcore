@@ -108,7 +108,7 @@ The response is a stream of Server-Sent Events. Each line is a JSON-serialized `
 data: {"type": "token", "agent_name": "assistant", "timestamp": "...", "data": {"text": "Hello"}}
 data: {"type": "tool_start", "agent_name": "assistant", "timestamp": "...", "data": {...}}
 data: {"type": "tool_end", "agent_name": "assistant", "timestamp": "...", "data": {...}}
-data: {"type": "complete", "agent_name": "assistant", "timestamp": "...", "data": {...}}
+data: {"type": "agent_complete", "agent_name": "assistant", "timestamp": "...", "data": {...}}
 ```
 
 ## CORS and Logging

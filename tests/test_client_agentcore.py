@@ -140,7 +140,7 @@ class TestInvoke:
         lines = [
             _make_sse_line("agent_start", "my_agent"),
             _make_sse_line("token", "my_agent", {"text": "Hello"}),
-            _make_sse_line("complete", "my_agent", {"usage": {}}),
+            _make_sse_line("agent_complete", "my_agent", {"usage": {}}),
         ]
         body = _make_streaming_body(lines)
         client._client.invoke_agent_runtime.return_value = {"response": body}
@@ -151,7 +151,7 @@ class TestInvoke:
         assert events[0].type == "agent_start"
         assert events[1].type == "token"
         assert events[1].data == {"text": "Hello"}
-        assert events[2].type == "complete"
+        assert events[2].type == "agent_complete"
 
     @pytest.mark.asyncio
     async def test_invoke_rejects_short_session_id(self, client: AgentCoreClient) -> None:
@@ -232,7 +232,7 @@ class TestInvoke:
 
     @pytest.mark.asyncio
     async def test_invoke_closes_stream_body_on_completion(self, client: AgentCoreClient) -> None:
-        body = _make_streaming_body([_make_sse_line("complete", "a")])
+        body = _make_streaming_body([_make_sse_line("agent_complete", "a")])
         client._client.invoke_agent_runtime.return_value = {"response": body}
 
         _ = [e async for e in client.invoke("Hi", session_id=_VALID_SESSION_ID)]
@@ -243,7 +243,9 @@ class TestInvoke:
     async def test_invoke_closes_stream_body_when_generator_closed(
         self, client: AgentCoreClient
     ) -> None:
-        body = _make_streaming_body([_make_sse_line("token", "a"), _make_sse_line("complete", "a")])
+        body = _make_streaming_body(
+            [_make_sse_line("token", "a"), _make_sse_line("agent_complete", "a")]
+        )
         client._client.invoke_agent_runtime.return_value = {"response": body}
 
         stream = client.invoke("Hi", session_id=_VALID_SESSION_ID)
@@ -256,7 +258,7 @@ class TestInvoke:
 class TestInvokeContentBody:
     @pytest.mark.asyncio
     async def test_invoke_with_content_sends_correct_body(self, client: AgentCoreClient) -> None:
-        body = _make_streaming_body([_make_sse_line("complete", "a")])
+        body = _make_streaming_body([_make_sse_line("agent_complete", "a")])
         client._client.invoke_agent_runtime.return_value = {"response": body}
 
         blocks: list[ContentBlock] = [text("hi"), image(b"data", format="png")]
@@ -269,7 +271,7 @@ class TestInvokeContentBody:
     async def test_invoke_with_single_block_sends_content_list(
         self, client: AgentCoreClient
     ) -> None:
-        body = _make_streaming_body([_make_sse_line("complete", "a")])
+        body = _make_streaming_body([_make_sse_line("agent_complete", "a")])
         client._client.invoke_agent_runtime.return_value = {"response": body}
 
         block = text("hi")
@@ -400,7 +402,7 @@ class TestInvokeRetry:
             session=mock_boto3_session,
             retry=RetryConfig(max_retries=2, base_delay=0.01, jitter=False),
         )
-        body = _make_streaming_body([_make_sse_line("complete", "a")])
+        body = _make_streaming_body([_make_sse_line("agent_complete", "a")])
 
         client._client.invoke_agent_runtime.side_effect = [
             _make_client_error("ThrottlingException"),

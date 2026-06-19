@@ -131,7 +131,7 @@ class TestInvokeHappyPath:
         event1 = MagicMock()
         event1.asdict.return_value = {"type": EventType.TOKEN}
         event2 = MagicMock()
-        event2.asdict.return_value = {"type": EventType.COMPLETE}
+        event2.asdict.return_value = {"type": EventType.AGENT_COMPLETE}
 
         async def _fake_run_with_events(
             resolved: object,
@@ -157,7 +157,7 @@ class TestInvokeHappyPath:
 
         assert results[0]["type"] == EventType.SESSION_START
         assert results[1]["type"] == EventType.TOKEN
-        assert results[2]["type"] == EventType.COMPLETE
+        assert results[2]["type"] == EventType.AGENT_COMPLETE
         assert results[3]["type"] == EventType.SESSION_END
         assert len(results) == 4
 

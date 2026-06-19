@@ -61,7 +61,7 @@ class TestAgentCoreClientRepl:
 
         async def _fake_invoke(prompt: str, *, session_id: str):
             seen_session_ids.append(session_id)
-            yield StreamEvent(type="complete", agent_name="agent", data={})
+            yield StreamEvent(type="agent_complete", agent_name="agent", data={})
 
         with (
             patch.object(client, "invoke", side_effect=_fake_invoke),

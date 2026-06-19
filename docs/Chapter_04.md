@@ -66,7 +66,7 @@ Events are `StreamEvent` objects defined by [strands-compose](https://github.com
 | `tool_start` | Agent is calling a tool |
 | `tool_end` | Tool returned a result |
 | `reasoning` | Model's reasoning/thinking output |
-| `complete` | Agent finished processing |
+| `agent_complete` | Agent finished processing |
 | `error` | Something went wrong |
 
 **Multi-agent events** (orchestrations):
