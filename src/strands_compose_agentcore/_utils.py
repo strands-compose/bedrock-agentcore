@@ -78,7 +78,6 @@ def error_event(message: str, **extra: Any) -> StreamEvent:
     return StreamEvent(
         type="error",
         agent_name="",
-        timestamp=datetime.now(timezone.utc),
         data=data,
     )
 

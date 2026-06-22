@@ -11,7 +11,10 @@ import asyncio
 import logging
 import math
 from dataclasses import dataclass, field
+from typing import Any
 
+from strands.agent import AgentResult
+from strands.multiagent import MultiAgentResult
 from strands.types.agent import AgentInput
 from strands_compose import (
     AppConfig,
@@ -24,6 +27,28 @@ from strands_compose import (
 from ._utils import error_event
 
 logger = logging.getLogger(__name__)
+
+
+def _session_end_data(response: AgentResult | MultiAgentResult | None) -> dict[str, Any]:
+    """Build the SESSION_END payload from the entry node's final response.
+
+    ``text`` is the plain-text answer; ``result`` is the full
+    JSON-serializable strands object. For a ``MultiAgentResult`` the text
+    is taken from the last contained ``AgentResult``. Empty when
+    ``response`` is ``None`` (invocation raised before returning).
+    """
+    if response is None:
+        return {"text": "", "result": {}}
+    if isinstance(response, AgentResult):
+        text = str(response)
+    else:
+        agent_results = [
+            agent_result
+            for node_result in response.results.values()
+            for agent_result in node_result.get_agent_results()
+        ]
+        text = str(agent_results[-1]) if agent_results else ""
+    return {"text": text, "result": response.to_dict()}
 
 
 @dataclass
@@ -64,7 +89,7 @@ def resolve_session(
         A ``SessionState`` ready for invocation.
     """
     resolved = load_session(app_config, infra, session_id=session_id)
-    events = resolved.wire_event_queue()
+    events = resolved.wire_event_queue(session_id=session_id)
     logger.info("session_id=<%s> | session resolved, agents ready", session_id)
     return SessionState(resolved=resolved, events=events, session_id=session_id)
 
@@ -76,24 +101,19 @@ async def run_entry_agent(
     *,
     invocation_timeout: float | None = None,
 ) -> None:
-    """Drive the entry agent and place events on the queue.
+    """Drive the entry agent and stream its events onto the queue.
 
-    Awaits ``resolved.entry.invoke_async(agent_input)``, optionally
-    wrapped in ``asyncio.wait_for`` when ``invocation_timeout`` is set.
-    On timeout or unhandled exception, places exactly one error
-    ``StreamEvent`` on ``events``. Always closes ``events`` in
-    ``finally`` so the consumer's drain loop terminates.
-
-    ``CancelledError``, ``KeyboardInterrupt``, and ``SystemExit`` are
-    not caught and propagate to the caller after the ``finally`` runs.
+    Awaits ``resolved.entry.invoke_async(agent_input)``, emits one error
+    ``StreamEvent`` on timeout or unhandled exception, and always closes
+    ``events`` so the consumer's drain loop terminates.
+    ``CancelledError``, ``KeyboardInterrupt``, and ``SystemExit`` propagate
+    after the close runs.
 
     Args:
-        resolved: Fully resolved config; ``resolved.entry.invoke_async``
-            is the entry agent.
+        resolved: Fully resolved config; ``resolved.entry`` is the entry agent.
         events: The session's wired ``EventQueue``.
         agent_input: User turn forwarded to the entry agent.
-        invocation_timeout: Maximum seconds to wait. ``None`` means no
-            timeout. Must be a positive finite float when provided.
+        invocation_timeout: Max seconds to wait; ``None`` disables the timeout.
 
     Raises:
         ValueError: ``invocation_timeout`` is zero, negative, or NaN.
@@ -106,13 +126,11 @@ async def run_entry_agent(
         )
 
     input_kind = type(agent_input).__name__
+    response: AgentResult | MultiAgentResult | None = None
 
     try:
         coro = resolved.entry.invoke_async(agent_input)  # ty: ignore
-        if invocation_timeout is not None:
-            await asyncio.wait_for(coro, timeout=invocation_timeout)
-        else:
-            await coro
+        response = await asyncio.wait_for(coro, timeout=invocation_timeout)
     except asyncio.TimeoutError:
         logger.error(
             "input_kind=<%s>, timeout=<%s> | agent invocation timed out",
@@ -128,9 +146,11 @@ async def run_entry_agent(
         logger.exception("input_kind=<%s> | agent invocation failed", input_kind)
         events.put_event(
             error_event(
-                "internal error during agent invocation",
+                "Internal error during agent invocation",
                 error=str(e),
             )
         )
     finally:
-        await events.close()
+        # Include the entry node's final response in the SESSION_END event.
+        # ``response`` is None when the invocation raised before returning.
+        await events.close(data=_session_end_data(response))

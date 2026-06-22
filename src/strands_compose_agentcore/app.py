@@ -35,10 +35,7 @@ from bedrock_agentcore import BedrockAgentCoreApp
 from bedrock_agentcore.runtime.context import BedrockAgentCoreContext
 from starlette.middleware.cors import CORSMiddleware
 from starlette.types import StatelessLifespan
-from strands_compose import (
-    AppConfig,
-    ResolvedInfra,
-)
+from strands_compose import AppConfig, ResolvedInfra
 from strands_compose.manifest import build_manifest
 from strands_compose.startup import validate_mcp
 

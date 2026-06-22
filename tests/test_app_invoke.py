@@ -3,19 +3,43 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from strands.agent import AgentResult
+from strands.multiagent import MultiAgentResult, Status
+from strands.multiagent.base import NodeResult
+from strands.telemetry.metrics import EventLoopMetrics
 from strands_compose import EventQueue
 from strands_compose.types import EventType
 
 from strands_compose_agentcore.app import create_app
-from strands_compose_agentcore.session import SessionState, run_entry_agent
+from strands_compose_agentcore.session import SessionState, _session_end_data, run_entry_agent
 
 from .conftest import make_app_config, make_infra, make_resolved_config  # pyrefly: ignore
 
 _MOD_APP = "strands_compose_agentcore.app"
 _VALID_SID = "a" * 33  # meets AgentCore 33-char minimum
+
+
+def _agent_result(text: str) -> AgentResult:
+    """Build a minimal AgentResult whose single text block is *text*."""
+    return AgentResult(
+        stop_reason="end_turn",
+        message={"role": "assistant", "content": [{"text": text}]},
+        metrics=EventLoopMetrics(),
+        state={},
+    )
+
+
+def _multiagent_result(*texts: str) -> MultiAgentResult:
+    """Build a MultiAgentResult with one completed agent node per text."""
+    results = {
+        f"node{i}": NodeResult(result=_agent_result(text), status=Status.COMPLETED)
+        for i, text in enumerate(texts)
+    }
+    return MultiAgentResult(status=Status.COMPLETED, results=results)
 
 
 async def _fake_run(
@@ -476,7 +500,7 @@ class TestRunEntryAgent:
         result = await events.get()
         assert result is not None
         assert result.type == "error"
-        assert result.data["message"] == "internal error during agent invocation"
+        assert result.data["message"] == "Internal error during agent invocation"
 
     @pytest.mark.asyncio
     async def test_closes_events_in_finally_on_exception(self) -> None:
@@ -572,3 +596,57 @@ class TestRunEntryAgent:
         while (result := await events.get()) is not None:
             pass
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_session_end_carries_response_payload(self) -> None:
+        queue: asyncio.Queue = asyncio.Queue()
+        resolved = MagicMock()
+        resolved.entry.invoke_async = AsyncMock(return_value=_agent_result("Done."))
+        events = EventQueue(queue)
+
+        await run_entry_agent(resolved, events, "hi")
+
+        session_end = await events.get()
+        assert session_end is not None
+        assert session_end.type == EventType.SESSION_END
+        assert session_end.data["text"] == "Done.\n"
+        assert session_end.data["result"]["type"] == "agent_result"
+
+
+class TestSessionEndData:
+    """Unit tests for the SESSION_END payload builder."""
+
+    def test_none_returns_empty_uniform_shape(self) -> None:
+        assert _session_end_data(None) == {"text": "", "result": {}}
+
+    def test_agent_result_text_and_serialized_result(self) -> None:
+        data = _session_end_data(_agent_result("Paris is the capital."))
+
+        assert data["text"] == "Paris is the capital.\n"
+        assert data["result"]["type"] == "agent_result"
+        assert data["result"]["message"]["content"][0]["text"] == "Paris is the capital."
+
+    def test_multiagent_text_is_last_agent_result(self) -> None:
+        data = _session_end_data(_multiagent_result("first node", "final node"))
+
+        assert data["text"] == "final node\n"
+        assert data["result"]["type"] == "multiagent_result"
+
+    def test_multiagent_without_agent_results_has_empty_text(self) -> None:
+        data = _session_end_data(MultiAgentResult(status=Status.COMPLETED, results={}))
+
+        assert data["text"] == ""
+        assert data["result"]["type"] == "multiagent_result"
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            _agent_result("hello"),
+            _multiagent_result("a", "b"),
+            MultiAgentResult(status=Status.COMPLETED, results={}),
+        ],
+    )
+    def test_payload_is_json_serializable(self, response: AgentResult | MultiAgentResult) -> None:
+        # SESSION_END data is JSON-encoded over SSE, so every value the
+        # builder emits must round-trip through json.dumps.
+        json.dumps(_session_end_data(response))
