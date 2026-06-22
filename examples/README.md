@@ -1,11 +1,12 @@
 # strands-compose-agentcore Examples
 
-Two examples that walk you from local prototyping to production deployment.
+Three examples that walk you from local prototyping to production deployment.
 
 | # | Folder | Stage | What it demonstrates |
 |---|--------|-------|----------------------|
 | 01 | [01_quick_start](./01_quick_start/README.md) | Develop | Multi-agent delegate orchestration + `dev` CLI — talk to your agents in one command |
 | 02 | [02_deploy](./02_deploy/README.md) | Deploy | End-to-end guide: create files → test → deploy → connect |
+| 03 | [03_multimodal](./03_multimodal/README.md) | Develop | Sending images and documents alongside text prompts |
 
 ## Prerequisites
 

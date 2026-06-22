@@ -79,9 +79,53 @@ Events are `StreamEvent` objects defined by [strands-compose](https://github.com
 | `multiagent_start` | Multi-agent orchestration started |
 | `multiagent_complete` | Multi-agent orchestration finished |
 
+**Session-level events** (emitted once per turn, by this package):
+
+| Type | Description |
+|------|-------------|
+| `session_start` | First event of every turn — carries the wired session manifest |
+| `session_end` | Last event of every turn — carries the entry node's final response |
+
+#### `session_start` payload
+
+```jsonc
+{
+  "session_id": "abc...",
+  "manifest": {
+    "agents": [...],
+    "orchestrations": [...],
+    "entry": {"name": "assistant", "kind": "agent"}
+  }
+}
+```
+
+The manifest describes the full wired topology: every agent, orchestration, and the entry point for this session. Useful for clients that want to display session metadata or validate the active configuration.
+
+#### `session_end` payload
+
+```jsonc
+{
+  "session_id": "abc...",
+  "text": "The capital of France is Paris.",
+  "result": {
+    "type": "agent_result",
+    "message": {"role": "assistant", "content": [{"text": "The capital of France is Paris."}]},
+    "stop_reason": "end_turn",
+    "checkpoint": null
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `text` | Plain-text answer from the entry node. For `AgentResult` this is `str(result)`; for `MultiAgentResult` it is the `str()` of the last contained `AgentResult`. Empty string when the invocation raised before returning. |
+| `result` | Full `to_dict()` serialization of the strands result object. `type` is `"agent_result"` for single-agent entry or `"multiagent_result"` for orchestration entry — the latter nests each node's `AgentResult` under `results[<node_name>]`. |
+
+`session_end` is always the last event in a turn — it is emitted even when the invocation times out or raises, so consumers can rely on it as a clean turn-complete signal.
+
 ### Error Handling
 
-If the agent raises an exception during invocation, the error is logged, an `error` event with `{"message": "internal error during agent invocation"}` is pushed to the queue, and the queue is closed. The server does not crash — it remains ready for the next invocation.
+If the agent raises an exception during invocation, the error is logged, an `error` event with `{"message": "Internal error during agent invocation"}` is pushed to the queue, and the queue is closed. The server does not crash — it remains ready for the next invocation.
 
 ## Multimodal Payloads
 
