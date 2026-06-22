@@ -22,6 +22,7 @@ from strands_compose import (
     ResolvedConfig,
     ResolvedInfra,
     load_session,
+    serialize_multiagent_result,
 )
 
 from ._utils import error_event
@@ -32,23 +33,19 @@ logger = logging.getLogger(__name__)
 def _session_end_data(response: AgentResult | MultiAgentResult | None) -> dict[str, Any]:
     """Build the SESSION_END payload from the entry node's final response.
 
-    ``text`` is the plain-text answer; ``result`` is the full
-    JSON-serializable strands object. For a ``MultiAgentResult`` the text
-    is taken from the last contained ``AgentResult``. Empty when
-    ``response`` is ``None`` (invocation raised before returning).
+    ``text`` is the plain-text answer from the last executing node.
+    ``result`` is the full JSON-serializable strands object — for a
+    ``MultiAgentResult`` this includes ``last_node_id``, ``response``,
+    and orchestration-specific metadata (``swarm`` or ``graph`` section).
+    Empty when ``response`` is ``None`` (invocation raised before returning).
     """
     if response is None:
         return {"text": "", "result": {}}
     if isinstance(response, AgentResult):
-        text = str(response)
-    else:
-        agent_results = [
-            agent_result
-            for node_result in response.results.values()
-            for agent_result in node_result.get_agent_results()
-        ]
-        text = str(agent_results[-1]) if agent_results else ""
-    return {"text": text, "result": response.to_dict()}
+        return {"text": str(response), "result": response.to_dict()}
+    serialized = serialize_multiagent_result(response)
+    text = serialized.get("response") or "" if serialized.get("results") else ""
+    return {"text": text, "result": serialized}
 
 
 @dataclass
@@ -144,12 +141,7 @@ async def run_entry_agent(
         raise
     except Exception as e:
         logger.exception("input_kind=<%s> | agent invocation failed", input_kind)
-        events.put_event(
-            error_event(
-                "Internal error during agent invocation",
-                error=str(e),
-            )
-        )
+        events.put_event(error_event("Internal error during agent invocation: %s" % str(e)))
     finally:
         # Include the entry node's final response in the SESSION_END event.
         # ``response`` is None when the invocation raised before returning.

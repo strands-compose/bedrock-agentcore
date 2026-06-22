@@ -201,7 +201,7 @@ class TestInvokePromptValidation:
 
         assert len(results) == 1
         assert results[0]["type"] == "error"
-        assert "prompt" in results[0]["data"]["message"]
+        assert "prompt" in results[0]["data"]["text"]
 
     @pytest.mark.asyncio
     async def test_rejects_empty_prompt(self) -> None:
@@ -217,7 +217,7 @@ class TestInvokePromptValidation:
 
         assert len(results) == 1
         assert results[0]["type"] == "error"
-        assert "prompt" in results[0]["data"]["message"]
+        assert "prompt" in results[0]["data"]["text"]
 
 
 class TestInvokeConcurrencyGuard:
@@ -247,7 +247,7 @@ class TestInvokeConcurrencyGuard:
         mock_run.assert_not_called()
         assert len(results) == 1
         assert results[0]["type"] == "error"
-        assert "already running" in results[0]["data"]["message"]
+        assert "already running" in results[0]["data"]["text"]
 
         session_state.invocation_lock.release()
 
@@ -323,7 +323,7 @@ class TestInvokeSessionIdValidation:
 
         assert len(results) == 1
         assert results[0]["type"] == "error"
-        assert "too short" in results[0]["data"]["message"]
+        assert "too short" in results[0]["data"]["text"]
 
     @pytest.mark.asyncio
     async def test_rejects_long_session_id(self) -> None:
@@ -339,7 +339,7 @@ class TestInvokeSessionIdValidation:
 
         assert len(results) == 1
         assert results[0]["type"] == "error"
-        assert "too long" in results[0]["data"]["message"]
+        assert "too long" in results[0]["data"]["text"]
 
 
 class TestInvokeMultimodalPayload:
@@ -415,7 +415,7 @@ class TestInvokeMultimodalPayload:
 
         assert len(results) == 1
         assert results[0]["type"] == "error"
-        assert "max_payload_bytes" in results[0]["data"]["message"]
+        assert "max_payload_bytes" in results[0]["data"]["text"]
 
     @pytest.mark.asyncio
     async def test_reply_content_forwarded_as_interrupt_response(self) -> None:
@@ -500,7 +500,8 @@ class TestRunEntryAgent:
         result = await events.get()
         assert result is not None
         assert result.type == "error"
-        assert result.data["message"] == "Internal error during agent invocation"
+        assert isinstance(result.data["text"], str)
+        assert result.data["text"].startswith("Internal error during agent invocation")
 
     @pytest.mark.asyncio
     async def test_closes_events_in_finally_on_exception(self) -> None:
@@ -580,8 +581,8 @@ class TestRunEntryAgent:
         result = await events.get()
         assert result is not None
         assert result.type == "error"
-        assert "timed out" in result.data["message"]
-        assert "0.01 seconds" in result.data["message"]
+        assert "timed out" in result.data["text"]
+        assert "0.01 seconds" in result.data["text"]
 
     @pytest.mark.asyncio
     async def test_no_timeout_when_none(self) -> None:
@@ -629,7 +630,7 @@ class TestSessionEndData:
     def test_multiagent_text_is_last_agent_result(self) -> None:
         data = _session_end_data(_multiagent_result("first node", "final node"))
 
-        assert data["text"] == "final node\n"
+        assert data["text"] == "final node"
         assert data["result"]["type"] == "multiagent_result"
 
     def test_multiagent_without_agent_results_has_empty_text(self) -> None:

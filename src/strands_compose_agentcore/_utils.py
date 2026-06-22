@@ -72,7 +72,7 @@ def error_event(message: str, **extra: Any) -> StreamEvent:
         ``agent_name``.  Call ``.asdict()`` to obtain the JSON-friendly
         form yielded from the ``/invocations`` entrypoint.
     """
-    data: dict[str, Any] = {"message": message}
+    data: dict[str, Any] = {"text": message}
     data.update(extra)
     return StreamEvent(
         type="error",

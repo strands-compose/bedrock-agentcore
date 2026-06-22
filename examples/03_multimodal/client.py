@@ -35,7 +35,7 @@ def main() -> int:
         if event.type == "token":
             print(event.data.get("text"), end="", flush=True)
         elif event.type == "error":
-            print("\nError:", event.data.get("message"), file=sys.stderr)
+            print("\nError:", event.data.get("text"), file=sys.stderr)
         elif event.type == "agent_complete":
             input_tokens = event.data.get("usage", {}).get("input_tokens")
             output_tokens = event.data.get("usage", {}).get("output_tokens")
