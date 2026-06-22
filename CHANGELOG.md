@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## v0.7.0 (2026-06-22)
+
+### Feat
+
+- include entry response in SESSION_END event (#28)
+
 ## v0.6.0 (2026-06-20)
 
 ### Fix
