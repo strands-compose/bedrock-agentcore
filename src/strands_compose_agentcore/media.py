@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 from typing import Any, cast
 
+from .media_formats import MEDIA_FORMATS
 from .types import (
     DOCUMENT_FORMATS,
     IMAGE_FORMATS,
@@ -26,23 +27,10 @@ from .types import (
 )
 
 _IMAGE_EXTENSIONS: dict[str, str] = {
-    ".png": "png",
-    ".jpg": "jpeg",
-    ".jpeg": "jpeg",
-    ".gif": "gif",
-    ".webp": "webp",
+    ext: s.format for s in MEDIA_FORMATS if s.category == "image" for ext in s.extensions
 }
 _DOCUMENT_EXTENSIONS: dict[str, str] = {
-    ".pdf": "pdf",
-    ".csv": "csv",
-    ".doc": "doc",
-    ".docx": "docx",
-    ".xls": "xls",
-    ".xlsx": "xlsx",
-    ".html": "html",
-    ".htm": "html",
-    ".txt": "txt",
-    ".md": "md",
+    ext: s.format for s in MEDIA_FORMATS if s.category == "document" for ext in s.extensions
 }
 
 

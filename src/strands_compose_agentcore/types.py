@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal, TypeAlias, TypedDict
 
+from .media_formats import MEDIA_FORMATS
+
 __all__ = [
     "AccessDeniedError",
     "AgentCoreClientError",
@@ -46,9 +48,9 @@ __all__ = [
 ImageFormat: TypeAlias = Literal["png", "jpeg", "gif", "webp"]
 DocumentFormat: TypeAlias = Literal["pdf", "csv", "doc", "docx", "xls", "xlsx", "html", "txt", "md"]
 
-IMAGE_FORMATS: frozenset[str] = frozenset({"png", "jpeg", "gif", "webp"})
+IMAGE_FORMATS: frozenset[str] = frozenset(s.format for s in MEDIA_FORMATS if s.category == "image")
 DOCUMENT_FORMATS: frozenset[str] = frozenset(
-    {"pdf", "csv", "doc", "docx", "xls", "xlsx", "html", "txt", "md"}
+    s.format for s in MEDIA_FORMATS if s.category == "document"
 )
 
 
