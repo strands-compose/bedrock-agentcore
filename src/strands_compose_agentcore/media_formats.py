@@ -10,11 +10,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-__all__ = [
-    "MEDIA_FORMATS",
-    "MediaFormatSpec",
-]
-
 
 @dataclass(frozen=True)
 class MediaFormatSpec:
