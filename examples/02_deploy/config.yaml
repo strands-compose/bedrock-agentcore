@@ -11,7 +11,7 @@
 models:
   default:
     provider: bedrock
-    model_id: openai.gpt-oss-20b-1:0
+    model_id: nvidia.nemotron-super-3-120b
 
 agents:
   assistant:

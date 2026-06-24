@@ -4,7 +4,7 @@
 
 ---
 
-**Deploy [strands-compose](https://github.com/strands-compose/sdk-python) agent systems on [AWS Bedrock AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/) — YAML in, managed cloud agents out**
+**Deploy [strands-compose](https://github.com/strands-compose/sdk-python) agent systems on [AWS Bedrock AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/)**
 
 <p>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python 3.11+"></a>
