@@ -18,6 +18,7 @@ from __future__ import annotations
 from .app import create_app
 from .client import AgentCoreClient, AsyncLocalClient, LocalClient, StopSessionResult
 from .media import document, image, reply, text
+from .media_formats import MEDIA_FORMATS, MediaFormatSpec
 from .types import (
     AccessDeniedError,
     AgentCoreClientError,
@@ -25,8 +26,10 @@ from .types import (
     ClientConnectionError,
     ConflictError,
     ContentBlock,
+    DOCUMENT_FORMATS,
     DocumentBlock,
     DocumentFormat,
+    IMAGE_FORMATS,
     ImageBlock,
     ImageFormat,
     InvalidRequestError,
@@ -47,12 +50,16 @@ __all__ = [
     "ClientConnectionError",
     "ConflictError",
     "ContentBlock",
+    "DOCUMENT_FORMATS",
     "DocumentBlock",
     "DocumentFormat",
+    "IMAGE_FORMATS",
     "ImageBlock",
     "ImageFormat",
     "InvalidRequestError",
     "LocalClient",
+    "MEDIA_FORMATS",
+    "MediaFormatSpec",
     "ReplyBlock",
     "RetryableConflictError",
     "RetryConfig",
