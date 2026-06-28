@@ -239,7 +239,12 @@ def create_app(
                     session_id,
                     cached.session_id,
                 )
-            session = resolve_session(app.state.app_config, app.state.infra, session_id)
+            try:
+                session = resolve_session(app.state.app_config, app.state.infra, session_id)
+            except Exception as exc:
+                logger.exception("session_id=<%s> | session resolution failed", session_id)
+                yield error_event(str(exc)).asdict()
+                return
             app.state.session = session
 
         # Flush stale events from any previous turn (including the SESSION_START
