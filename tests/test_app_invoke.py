@@ -142,6 +142,29 @@ class TestInvokeSessionHandling:
         assert mock_resolve.call_args.args[2] == "c" * 33
         assert app.state.session is new_session
 
+    @pytest.mark.asyncio
+    async def test_yields_error_event_when_resolve_session_raises(self) -> None:
+        app = create_app(make_app_config(), make_infra())
+        invoke = app.handlers["main"]
+
+        app.state.app_config = make_app_config()
+        app.state.infra = make_infra()
+        app.state.session = None
+
+        with (
+            patch(f"{_MOD_APP}.BedrockAgentCoreContext.get_session_id", return_value=_VALID_SID),
+            patch(
+                f"{_MOD_APP}.resolve_session",
+                side_effect=RuntimeError("Token has expired and refresh failed"),
+            ),
+        ):
+            results = [item async for item in invoke({"prompt": "hi"})]
+
+        assert len(results) == 1
+        assert results[0]["type"] == "error"
+        assert "Token has expired and refresh failed" in results[0]["data"]["text"]
+        assert app.state.session is None
+
 
 class TestInvokeHappyPath:
     @pytest.mark.asyncio
