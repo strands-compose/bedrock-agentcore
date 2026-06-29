@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## v0.9.1 (2026-06-29)
+
+### Fix
+
+- **session**: forward session resolution errors as StreamEvent (#33)
+
 ## v0.9.0 (2026-06-24)
 
 ### Feat
