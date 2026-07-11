@@ -195,7 +195,7 @@ def create_app(
             )
         except MultimodalPayloadError as exc:
             logger.warning("payload rejected | %s", exc)
-            yield error_event(str(exc)).asdict()
+            yield error_event(str(exc), exception_type=type(exc).__name__).asdict()
             return
 
         session_id = BedrockAgentCoreContext.get_session_id()
@@ -204,7 +204,7 @@ def create_app(
             validate_session_id(session_id)
         except ValueError as exc:
             logger.warning("session_id=<%s> | %s", session_id, exc)
-            yield error_event(str(exc)).asdict()
+            yield error_event(str(exc), exception_type=type(exc).__name__).asdict()
             return
 
         # Snapshot the cached session once.  asyncio is single-threaded,
@@ -227,7 +227,10 @@ def create_app(
                 session_id,
                 cached.session_id,
             )
-            yield error_event("Agent is already running, try again later").asdict()
+            yield error_event(
+                "Agent is already running, try again later",
+                exception_type="AgentBusy",
+            ).asdict()
             return
 
         if cached is not None and cached.session_id == session_id:
@@ -243,7 +246,7 @@ def create_app(
                 session = resolve_session(app.state.app_config, app.state.infra, session_id)
             except Exception as exc:
                 logger.exception("session_id=<%s> | session resolution failed", session_id)
-                yield error_event(str(exc)).asdict()
+                yield error_event(str(exc), exception_type=type(exc).__name__).asdict()
                 return
             app.state.session = session
 

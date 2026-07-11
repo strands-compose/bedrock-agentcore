@@ -59,20 +59,24 @@ def validate_session_id(session_id: str | None) -> None:
         )
 
 
-def error_event(message: str, **extra: Any) -> StreamEvent:
-    """Build an error StreamEvent.
+def error_event(
+    message: str,
+    *,
+    exception_type: str = "AdapterError",
+    **extra: Any,
+) -> StreamEvent:
+    """Build an error StreamEvent mirroring the upstream ``text``/``exception_type`` schema.
 
     Args:
-        message: Human-readable error text. Stored verbatim in
-            ``data["message"]``.
+        message: Human-readable error text, stored in ``data["text"]``.
+        exception_type: Machine-readable discriminator (``type(exc).__name__``
+            or a synthetic token like ``"AgentBusy"``).
         **extra: Additional key-value pairs merged into ``data``.
 
     Returns:
-        A ``StreamEvent`` with ``type="error"`` and an empty
-        ``agent_name``.  Call ``.asdict()`` to obtain the JSON-friendly
-        form yielded from the ``/invocations`` entrypoint.
+        A ``StreamEvent`` with ``type="error"`` and an empty ``agent_name``.
     """
-    data: dict[str, Any] = {"text": message}
+    data: dict[str, Any] = {"text": message, "exception_type": exception_type}
     data.update(extra)
     return StreamEvent(
         type="error",

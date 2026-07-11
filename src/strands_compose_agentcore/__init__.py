@@ -20,16 +20,16 @@ from .client import AgentCoreClient, AsyncLocalClient, LocalClient, StopSessionR
 from .media import document, image, reply, text
 from .media_formats import MEDIA_FORMATS, MediaFormatSpec
 from .types import (
+    DOCUMENT_FORMATS,
+    IMAGE_FORMATS,
     AccessDeniedError,
     AgentCoreClientError,
     AgentInput,
     ClientConnectionError,
     ConflictError,
     ContentBlock,
-    DOCUMENT_FORMATS,
     DocumentBlock,
     DocumentFormat,
-    IMAGE_FORMATS,
     ImageBlock,
     ImageFormat,
     InvalidRequestError,

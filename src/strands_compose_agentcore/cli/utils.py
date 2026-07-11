@@ -27,18 +27,19 @@ def reset() -> str:
 
 
 class CLIError(Exception):
-    """Raised by CLI commands to signal a user-facing error.
-
-    ``main()`` catches this, prints the message to stderr, and calls
-    ``sys.exit(code)`` — keeping command handlers testable without
-    catching ``SystemExit``.
-
-    Args:
-        message: Human-readable error message.
-        code: Exit code (default ``1``).
-    """
+    """Raised by CLI commands to signal a user-facing error."""
 
     def __init__(self, message: str, code: int = 1) -> None:
+        """Initialize the CLI error.
+
+        ``main()`` catches this, prints the message to stderr, and calls
+        ``sys.exit(code)`` — keeping command handlers testable without
+        catching ``SystemExit``.
+
+        Args:
+            message: Human-readable error message.
+            code: Exit code (default ``1``).
+        """
         super().__init__(message)
         self.message = message
         self.code = code

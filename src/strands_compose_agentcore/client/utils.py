@@ -55,7 +55,7 @@ def parse_sse_line(text: str) -> StreamEvent | None:
     try:
         event_dict = json.loads(text)
     except json.JSONDecodeError:
-        logger.debug("line=<%s> | skipping non-JSON line", text[:120])
+        logger.debug("len=<%d> | skipping non-JSON SSE line", len(text))
         return None
     return StreamEvent.from_dict(event_dict)
 
