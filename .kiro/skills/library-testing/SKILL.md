@@ -3,7 +3,7 @@ name: library-testing
 description: Write, repair, and reason about tests for strands-compose-agentcore in tests/. Use whenever adding, fixing, or reviewing tests, or deciding what to test for a change. Defines what is worth testing, what is not, and how. Library tests only; not examples or docs prose.
 metadata:
   area: testing
-  stack: pytest,pytest-asyncio,pytest-mock,starlette-testclient,httpx,hypothesis
+  stack: pytest,pytest-asyncio,pytest-mock,starlette,httpx
 ---
 
 # Library Testing
