@@ -47,6 +47,7 @@ For comprehensive development and testing rules, load the `.kiro/skills/`:
 from strands_compose import load_config, resolve_infra, load_session
 from strands_compose import AppConfig, ResolvedConfig, ResolvedInfra
 from strands_compose import EventQueue, StreamEvent, AnsiRenderer
+from strands_compose import serialize_multiagent_result
 from bedrock_agentcore import BedrockAgentCoreApp
 from bedrock_agentcore.runtime.context import BedrockAgentCoreContext
 ```

@@ -110,7 +110,7 @@ from strands_compose_agentcore import (
 
 ## Stack notes
 
-- **Python >= 3.11.** Tooling targets 3.13 for ruff/ty.
+- **Python >= 3.11.** No explicit ruff/ty target-version configured.
 - **ASGI app** via `BedrockAgentCoreApp` (inherits from Starlette).
 - **Console scripts:** `sca` and `strands-compose-agentcore` both point to
   `strands_compose_agentcore.cli:main`.
