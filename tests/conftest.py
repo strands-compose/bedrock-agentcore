@@ -53,14 +53,12 @@ def app_builder():
 
 @pytest.fixture()
 def test_client(app_builder):
-    """Provide a Starlette TestClient with the faked ASGI app."""
+    """Provide a Starlette TestClient with the faked ASGI app.
+
+    The _noop_lifespan sets app.state attributes during startup.
+    No redundant re-initialization here -- if lifespan fails to set
+    state, that is a real bug the test should surface.
+    """
     app = app_builder()
     with TestClient(app, raise_server_exceptions=False) as client:
-        # Ensure state is initialized (lifespan sets these)
-        if not hasattr(app.state, "session"):
-            app.state.session = None
-        if not hasattr(app.state, "app_config"):
-            app.state.app_config = None
-        if not hasattr(app.state, "infra"):
-            app.state.infra = None
         yield client
