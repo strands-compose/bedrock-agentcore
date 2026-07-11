@@ -55,4 +55,12 @@ def app_builder():
 def test_client(app_builder):
     """Provide a Starlette TestClient with the faked ASGI app."""
     app = app_builder()
-    return TestClient(app, raise_server_exceptions=False)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        # Ensure state is initialized (lifespan sets these)
+        if not hasattr(app.state, "session"):
+            app.state.session = None
+        if not hasattr(app.state, "app_config"):
+            app.state.app_config = None
+        if not hasattr(app.state, "infra"):
+            app.state.infra = None
+        yield client
