@@ -82,6 +82,11 @@ markers = [
     "integration: Integration tests (full pipeline)",
 ]
 asyncio_mode = "auto"
+filterwarnings = [
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated:starlette.exceptions.StarletteDeprecationWarning",
+    "ignore:Support for class-based `config` is deprecated:pydantic.warnings.PydanticDeprecatedSince20",
+    "ignore:datetime.datetime.utcnow\\(\\) is deprecated:DeprecationWarning",
+]
 
 [tool.commitizen]
 name = "cz_conventional_commits"
