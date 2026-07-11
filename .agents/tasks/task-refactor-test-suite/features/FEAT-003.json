@@ -2,7 +2,7 @@
   "id": "FEAT-003",
   "type": "fix",
   "description": "Address review findings: replace MagicMock with owned fakes in client tests, add REPL tests, remove redundant conftest state, centralize transport fakes, improve coverage",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Create tests/fakes/transport.py with FakeStreamingBody, FakeBotoClient, FakeClientError, FakeUrlResponse for reuse across client tests",
     "Refactor tests/client/test_agentcore.py to use FakeBotoClient instead of MagicMock scaffolding",
@@ -26,5 +26,5 @@
     "uv run just test"
   ],
   "blocked_reason": null,
-  "findings": null
+  "findings": "All 5 review issues addressed. Coverage improved from 72% to 77%. REPL coverage went from 11% to 100%. FakeStreamingBody and FakeBotoClient centralized in tests/fakes/transport.py. No mock.assert_called_once() remains in CLI tests. Redundant state init removed from conftest. 162 tests pass. Absolute imports (from tests.fakes.transport) required rather than relative imports because tests/ lacks __init__.py and pytest uses rootdir discovery."
 }
