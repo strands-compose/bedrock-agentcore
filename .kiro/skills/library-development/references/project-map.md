@@ -19,7 +19,7 @@ src/strands_compose_agentcore/
 ├── py.typed             # PEP 561 marker
 ├── client/
 │   ├── __init__.py      # Re-exports: AgentCoreClient, LocalClient, AsyncLocalClient, exceptions
-│   ├── agentcore.py     # AgentCoreClient: async boto3 + ThreadPoolExecutor, SSE streaming, retry
+│   ├── agentcore.py     # AgentCoreClient: async boto3 (thread-offloaded), SSE streaming, retry
 │   ├── local.py         # LocalClient (sync urllib) + AsyncLocalClient (httpx) -- both yield StreamEvent
 │   ├── utils.py         # Shared: parse_sse_line(), translate_error(), build_invocation_body(), DEFAULT_SESSION_ID
 │   └── repl.py          # run_repl() -- interactive loop with slash commands, AnsiRenderer
@@ -50,32 +50,49 @@ src/strands_compose_agentcore/
 | Invocation locking / busy state | `app.py` entrypoint (lock check) + `session.py` (`SessionState.invocation_lock`) |
 | Public API surface | `__init__.py` (top-level `__all__`) + `client/__init__.py` |
 
-## Invariants observed in the codebase
+## Architectural invariants
 
-- **Two-phase resolution is architectural law.** `resolve_infra` once at boot
-  (models, MCP); `resolve_session` lazily on first invocation with the session
-  ID from the AgentCore header. Session is cached and reused until a new
-  session ID arrives.
+Intended design law:
+
+- **Two-phase resolution.** `resolve_infra` once at boot (models, MCP);
+  `resolve_session` lazily on first invocation with the session ID from the
+  AgentCore header. Session is cached and reused until a new session ID arrives.
+  Never store agents/session managers on `ResolvedInfra`.
+- **Single-flight by design.** One invocation at a time per pod. Concurrent
+  single-tenant invocations are rejected on purpose; multi-tenant concurrency is
+  out of scope (AgentCore's microVM handles isolation). The invocation lock
+  enforces this in local dev where no microVM exists; `/ping` reports
+  `HEALTHY_BUSY` while locked. The busy-check → lock-acquire path has no `await`
+  between it — preserve that.
+- **Deliberate lockstep coupling with strands-compose.** Its types
+  (`StreamEvent`, `ResolvedConfig`, `EventQueue`) are trusted, re-exported
+  unchanged, and never wrapped or re-versioned. Upstream breaking changes are
+  fixed here in the same release train, not shimmed. Only `startup.validate_mcp`
+  and `manifest.build_manifest` are sanctioned deep imports.
 - **`MEDIA_FORMATS` is the sole format source of truth.** `IMAGE_FORMATS`,
-  `DOCUMENT_FORMATS`, `_IMAGE_EXTENSIONS`, `_DOCUMENT_EXTENSIONS` are all
-  derived. Add a format in one place only.
-- **Single entrypoint pattern.** The app has exactly one `@app.entrypoint`
-  async generator. All request handling, error recovery, and concurrency
-  control lives inside it.
-- **Invocation lock prevents concurrency.** One agent invocation at a time per
-  pod. Concurrent requests are rejected with an error event. `/ping` returns
-  `HEALTHY_BUSY` while locked.
-- **Error events, never HTTP errors.** Server failures emit a `StreamEvent`
-  with `type="error"` and return normally from the generator. The SSE
-  connection stays open for the single response.
+  `DOCUMENT_FORMATS`, and the extension maps all derive from it. Add a format in
+  one place only.
+- **Single entrypoint pattern.** Exactly one `@app.entrypoint` async generator;
+  all request handling, error recovery, and single-flight control live inside it.
+  Because it `yield`s while a background run task is alive, it uses an explicit
+  `asyncio.create_task` + `try/finally` (awaited on completion, cancelled-then-awaited
+  on early exit) rather than a `TaskGroup` — yielding across a cancel scope is
+  unsafe (PEP 789).
+- **Error events, never HTTP errors.** Server failures emit one `type="error"`
+  `StreamEvent` whose `data` mirrors the upstream error schema
+  (`text` + `exception_type`, never an adapter-only `code`) and return
+  normally; the SSE connection stays open for the single response.
 - **Client contract is uniform.** All three clients accept `AgentInput` (str |
-  ContentBlock | list[ContentBlock]) and yield `StreamEvent`. The wire shape is
-  `{"prompt": ...}`.
-- **Exception hierarchy maps 1:1 to AWS error codes.** Each botocore error
-  code has a typed `AgentCoreClientError` subclass. `_ERROR_MAP` is the
-  mapping.
-- **CLI uses `CLIError` for user-facing failures.** `main()` catches it,
-  prints in red, and exits. Command handlers never call `sys.exit` directly.
+  ContentBlock | list[ContentBlock]) and yield `StreamEvent`. Wire shape is
+  `{"prompt": ...}`. boto3 is bridged with `asyncio.to_thread` / a bounded
+  executor; the loop is never blocked.
+- **Exception hierarchy maps 1:1 to AWS error codes.** Each botocore error code
+  has a typed `AgentCoreClientError` subclass; the error map is the mapping.
+- **CLI uses `CLIError` for user-facing failures.** `main()` catches it, prints
+  in red, and exits. Command handlers never call `sys.exit` directly.
+- **Observability is the platform's.** AgentCore auto-instruments OTEL and
+  ingests structured JSON logs; the adapter emits correlated key/value logs
+  (never payload contents or secrets) rather than building its own tracing.
 
 ## Public API surface
 
@@ -98,6 +115,11 @@ from strands_compose_agentcore import (
     RetryConfig,
 )
 ```
+
+The yielded event type, `StreamEvent`, is a strands-compose type re-exported as
+part of this package's public surface (intentional lockstep coupling). Consumers
+may import it from `strands_compose_agentcore`; the package tracks its shape in
+lockstep with strands-compose rather than shielding callers from it.
 
 ## Dependencies (runtime)
 

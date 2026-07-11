@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import logging
 import socket
 import threading
 import time
@@ -14,8 +13,6 @@ from pathlib import Path
 from .. import create_app
 from ..client.local import LocalClient
 from .utils import CLIError
-
-logger = logging.getLogger(__name__)
 
 _SERVER_STARTUP_TIMEOUT = 30.0
 _SERVER_POLL_INTERVAL = 0.5

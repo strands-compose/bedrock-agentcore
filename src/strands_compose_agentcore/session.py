@@ -126,22 +126,30 @@ async def run_entry_agent(
     response: AgentResult | MultiAgentResult | None = None
 
     try:
-        coro = resolved.entry.invoke_async(agent_input)  # ty: ignore
-        response = await asyncio.wait_for(coro, timeout=invocation_timeout)
-    except asyncio.TimeoutError:
+        async with asyncio.timeout(invocation_timeout):
+            response = await resolved.entry.invoke_async(agent_input)  # ty: ignore
+    except TimeoutError:
         logger.error(
             "input_kind=<%s>, timeout=<%s> | agent invocation timed out",
             input_kind,
             invocation_timeout,
         )
         events.put_event(
-            error_event("Agent invocation timed out after %s seconds" % invocation_timeout)
+            error_event(
+                "Agent invocation timed out after %s seconds" % invocation_timeout,
+                exception_type="TimeoutError",
+            )
         )
     except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
         raise
     except Exception as e:
         logger.exception("input_kind=<%s> | agent invocation failed", input_kind)
-        events.put_event(error_event("Internal error during agent invocation: %s" % str(e)))
+        events.put_event(
+            error_event(
+                "Internal error during agent invocation: %s" % str(e),
+                exception_type=type(e).__name__,
+            )
+        )
     finally:
         # Include the entry node's final response in the SESSION_END event.
         # ``response`` is None when the invocation raised before returning.

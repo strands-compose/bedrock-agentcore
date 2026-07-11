@@ -10,12 +10,20 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from starlette.testclient import TestClient
 
 from strands_compose_agentcore.app import create_app
+
+# prepare_app_state is patched out below; its (app_config, infra) return
+# value is forwarded only into the also-patched _make_lifespan, which
+# ignores its arguments and always returns _noop_lifespan.  Neither value
+# is ever inspected, so plain sentinels make that fact visible instead of
+# implying a rich fake is needed.
+_APP_CONFIG = object()
+_INFRA = object()
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -34,7 +42,7 @@ def app_builder():
 
     def _build(**create_app_kwargs: Any):
         with patch("strands_compose_agentcore.app.prepare_app_state") as mock_prep:
-            mock_prep.return_value = (MagicMock(), MagicMock())
+            mock_prep.return_value = (_APP_CONFIG, _INFRA)
             with patch("strands_compose_agentcore.app._make_lifespan") as mock_ls:
 
                 @asynccontextmanager

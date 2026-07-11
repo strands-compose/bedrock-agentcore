@@ -1,13 +1,15 @@
 """Tests for the shared REPL loop (client/repl.py).
 
-Uses a fake stream_fn and monkeypatched input() to drive run_repl
-without a real terminal.  Tests verify observable outcomes: loop exit,
-stream_fn invocation, slash command handling, and graceful interrupts.
+Drives run_repl with a recording stream_fn and a scripted input() so no real
+terminal is needed.  Asserts observable outcomes: whether the prompt reached
+stream_fn, and that control commands / interrupts exit or short-circuit.
 """
 
 from __future__ import annotations
 
 from unittest.mock import patch
+
+import pytest
 
 from strands_compose_agentcore.client.repl import run_repl
 
@@ -25,168 +27,75 @@ def _make_input_fn(responses: list[str]):
     return _fake_input
 
 
-class TestReplExitBehaviour:
-    """run_repl exits on empty input, /exit, /quit, and EOFError."""
+class _Recorder:
+    """A stream_fn that records the prompts it was asked to stream."""
 
-    def test_exits_on_empty_input(self) -> None:
-        called = False
+    def __init__(self, *, returns: bool = True) -> None:
+        self.returns = returns
+        self.prompts: list[str] = []
+        self.sessions: list[str] = []
 
-        def stream_fn(msg, sid, renderer):
-            nonlocal called
-            called = True
-            return True
+    def __call__(self, msg: str, sid: str, renderer) -> bool:
+        self.prompts.append(msg)
+        self.sessions.append(sid)
+        return self.returns
 
-        with patch("builtins.input", _make_input_fn([""])):
-            run_repl(banner="Test", session_id="test-sid", stream_fn=stream_fn)
 
-        assert not called
+class TestReplExitWithoutStreaming:
+    """Inputs that end the loop or are handled locally never reach stream_fn."""
 
-    def test_exits_on_eof_error(self) -> None:
-        called = False
+    @pytest.mark.parametrize("first_input", ["", "/exit", "/quit", "/session", "/help", "/clear"])
+    def test_control_input_does_not_stream(self, first_input: str) -> None:
+        recorder = _Recorder()
+        # A trailing "" guarantees the loop terminates after a slash command.
+        with patch("builtins.input", _make_input_fn([first_input, ""])):
+            run_repl(banner="Test", session_id="sid", stream_fn=recorder)
 
-        def stream_fn(msg, sid, renderer):
-            nonlocal called
-            called = True
-            return True
+        assert recorder.prompts == []
 
+    def test_eof_error_exits_without_streaming(self) -> None:
+        recorder = _Recorder()
         with patch("builtins.input", side_effect=EOFError):
-            run_repl(banner="Test", session_id="test-sid", stream_fn=stream_fn)
+            run_repl(banner="Test", session_id="sid", stream_fn=recorder)
 
-        assert not called
-
-    def test_exits_on_slash_exit(self) -> None:
-        called = False
-
-        def stream_fn(msg, sid, renderer):
-            nonlocal called
-            called = True
-            return True
-
-        with patch("builtins.input", _make_input_fn(["/exit"])):
-            run_repl(banner="Test", session_id="test-sid", stream_fn=stream_fn)
-
-        assert not called
-
-    def test_exits_on_slash_quit(self) -> None:
-        called = False
-
-        def stream_fn(msg, sid, renderer):
-            nonlocal called
-            called = True
-            return True
-
-        with patch("builtins.input", _make_input_fn(["/quit"])):
-            run_repl(banner="Test", session_id="test-sid", stream_fn=stream_fn)
-
-        assert not called
-
-
-class TestReplStreamFnInvocation:
-    """run_repl calls stream_fn with correct arguments for normal prompts."""
-
-    def test_stream_fn_called_with_prompt_and_session_id(self) -> None:
-        captured_args: list[tuple] = []
-
-        def stream_fn(msg, sid, renderer):
-            captured_args.append((msg, sid))
-            return True
-
-        with patch("builtins.input", _make_input_fn(["Hello world", ""])):
-            run_repl(banner="Test", session_id="my-session", stream_fn=stream_fn)
-
-        assert len(captured_args) == 1
-        assert captured_args[0][0] == "Hello world"
-        assert captured_args[0][1] == "my-session"
-
-    def test_stream_fn_called_multiple_times_for_multiple_prompts(self) -> None:
-        captured_msgs: list[str] = []
-
-        def stream_fn(msg, sid, renderer):
-            captured_msgs.append(msg)
-            return True
-
-        with patch("builtins.input", _make_input_fn(["first", "second", ""])):
-            run_repl(banner="Test", session_id="sid", stream_fn=stream_fn)
-
-        assert captured_msgs == ["first", "second"]
-
-    def test_exits_when_stream_fn_returns_false(self) -> None:
-        call_count = 0
-
-        def stream_fn(msg, sid, renderer):
-            nonlocal call_count
-            call_count += 1
-            return False
-
-        with patch("builtins.input", _make_input_fn(["msg1", "msg2", "msg3"])):
-            run_repl(banner="Test", session_id="sid", stream_fn=stream_fn)
-
-        # Should exit after first call returns False
-        assert call_count == 1
-
-    def test_unknown_slash_command_sent_as_normal_prompt(self) -> None:
-        captured_msgs: list[str] = []
-
-        def stream_fn(msg, sid, renderer):
-            captured_msgs.append(msg)
-            return True
-
-        with patch("builtins.input", _make_input_fn(["/unknown", ""])):
-            run_repl(banner="Test", session_id="sid", stream_fn=stream_fn)
-
-        assert captured_msgs == ["/unknown"]
-
-
-class TestReplSlashCommands:
-    """Slash commands are handled without calling stream_fn."""
-
-    def test_slash_session_does_not_call_stream_fn(self) -> None:
-        called = False
-
-        def stream_fn(msg, sid, renderer):
-            nonlocal called
-            called = True
-            return True
-
-        with patch("builtins.input", _make_input_fn(["/session", ""])):
-            run_repl(banner="Test", session_id="my-sid", stream_fn=stream_fn)
-
-        assert not called
-
-    def test_slash_help_does_not_call_stream_fn(self) -> None:
-        called = False
-
-        def stream_fn(msg, sid, renderer):
-            nonlocal called
-            called = True
-            return True
-
-        with patch("builtins.input", _make_input_fn(["/help", ""])):
-            run_repl(banner="Test", session_id="sid", stream_fn=stream_fn)
-
-        assert not called
-
-    def test_slash_clear_does_not_call_stream_fn(self) -> None:
-        called = False
-
-        def stream_fn(msg, sid, renderer):
-            nonlocal called
-            called = True
-            return True
-
-        with patch("builtins.input", _make_input_fn(["/clear", ""])):
-            run_repl(banner="Test", session_id="sid", stream_fn=stream_fn)
-
-        assert not called
-
-
-class TestReplKeyboardInterrupt:
-    """run_repl handles KeyboardInterrupt gracefully."""
+        assert recorder.prompts == []
 
     def test_keyboard_interrupt_exits_gracefully(self) -> None:
-        def stream_fn(msg, sid, renderer):
-            return True
-
+        recorder = _Recorder()
         with patch("builtins.input", side_effect=KeyboardInterrupt):
-            # Should not raise -- exits gracefully
-            run_repl(banner="Test", session_id="sid", stream_fn=stream_fn)
+            run_repl(banner="Test", session_id="sid", stream_fn=recorder)
+
+        assert recorder.prompts == []
+
+
+class TestReplStreaming:
+    """Normal prompts are forwarded to stream_fn with the session id."""
+
+    def test_prompt_and_session_id_forwarded_to_stream_fn(self) -> None:
+        recorder = _Recorder()
+        with patch("builtins.input", _make_input_fn(["Hello world", ""])):
+            run_repl(banner="Test", session_id="my-session", stream_fn=recorder)
+
+        assert recorder.prompts == ["Hello world"]
+        assert recorder.sessions == ["my-session"]
+
+    def test_multiple_prompts_stream_in_order(self) -> None:
+        recorder = _Recorder()
+        with patch("builtins.input", _make_input_fn(["first", "second", ""])):
+            run_repl(banner="Test", session_id="sid", stream_fn=recorder)
+
+        assert recorder.prompts == ["first", "second"]
+
+    def test_unknown_slash_command_is_sent_as_prompt(self) -> None:
+        recorder = _Recorder()
+        with patch("builtins.input", _make_input_fn(["/unknown", ""])):
+            run_repl(banner="Test", session_id="sid", stream_fn=recorder)
+
+        assert recorder.prompts == ["/unknown"]
+
+    def test_loop_exits_when_stream_fn_returns_false(self) -> None:
+        recorder = _Recorder(returns=False)
+        with patch("builtins.input", _make_input_fn(["msg1", "msg2", "msg3"])):
+            run_repl(banner="Test", session_id="sid", stream_fn=recorder)
+
+        assert recorder.prompts == ["msg1"]

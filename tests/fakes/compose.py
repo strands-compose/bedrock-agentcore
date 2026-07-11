@@ -17,8 +17,11 @@ from strands_compose import EventQueue
 class FakeEntry:
     """Stands in for a resolved entry agent/orchestration.
 
-    ``invoke_async`` returns immediately with a canned result, or raises
-    a configured exception.  No real model call, no real strands Agent.
+    ``invoke_async`` returns a canned result, raises a configured error, or --
+    when ``gate`` is set -- waits on that event so a test can control *when*
+    the run completes.  A gate that is never set models a run that never
+    finishes on its own (timeout, cancellation, busy).  No real model call,
+    no real strands Agent, no clocks.
     """
 
     def __init__(
@@ -26,18 +29,18 @@ class FakeEntry:
         *,
         result: Any = None,
         error: Exception | None = None,
-        delay: float = 0,
+        gate: asyncio.Event | None = None,
     ) -> None:
         self.result = result
         self.error = error
-        self.delay = delay
+        self.gate = gate
         self.calls: list[Any] = []
 
     async def invoke_async(self, agent_input: Any) -> Any:
-        """Fake invocation that stores the call and returns or raises."""
+        """Fake invocation that stores the call and returns, raises, or gates."""
         self.calls.append(agent_input)
-        if self.delay:
-            await asyncio.sleep(self.delay)
+        if self.gate is not None:
+            await self.gate.wait()
         if self.error:
             raise self.error
         return self.result

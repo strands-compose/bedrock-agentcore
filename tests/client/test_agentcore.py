@@ -1,121 +1,116 @@
-"""Tests for AgentCoreClient invoke and stop_session.
+"""Tests for AgentCoreClient invoke, stop_session, and throttle retry.
 
-Uses FakeBotoClient and FakeStreamingBody from tests/fakes/transport.py
-instead of MagicMock scaffolding.  Fakes are injected at the transport
-seam (client._client) -- the owned boundary between our code and boto3.
+boto3 is driven through ``botocore.Stubber``, the vendor's own test seam.
+Stubber validates the request against the real service model, so a wrong
+parameter name fails loudly -- a fidelity a hand-rolled client fake cannot
+give.  The streaming response uses a real ``botocore.response.StreamingBody``
+so the client's ``iter_lines()`` path runs for real.
 """
 
 from __future__ import annotations
 
+import io
 import json
 from unittest.mock import patch
 
 import pytest
-from botocore.exceptions import ClientError
+from botocore.response import StreamingBody
+from botocore.stub import Stubber
 from strands_compose import StreamEvent
 
 from strands_compose_agentcore.client.agentcore import AgentCoreClient, StopSessionResult
-from strands_compose_agentcore.types import AccessDeniedError
+from strands_compose_agentcore.types import AccessDeniedError, RetryConfig, ThrottledError
 
-from tests.fakes.transport import FakeBotoClient, FakeStreamingBody
+_ARN = "arn:aws:bedrock-agentcore:us-east-1:0:runtime/test"
+_SID = "s" * 33
 
 
-def _make_client(fake_boto: FakeBotoClient) -> AgentCoreClient:
-    """Build an AgentCoreClient with the boto3 client replaced by a fake.
+def _client(*, retry: RetryConfig | None = None) -> AgentCoreClient:
+    """Build a client without touching AWS (region supplied explicitly)."""
+    return AgentCoreClient(_ARN, region="us-east-1", retry=retry)
 
-    Patches boto3.Session so __init__ doesn't make real AWS calls,
-    then swaps in the fake client on the instance.
-    """
-    with patch("boto3.Session") as mock_session_cls:
-        mock_session = mock_session_cls.return_value
-        mock_session.region_name = "us-east-1"
-        mock_session.client.return_value = fake_boto
-        client = AgentCoreClient("arn:aws:bedrock:us-east-1:123:agent-runtime/test")
-    # Ensure the fake is wired (in case __init__ assigns differently)
-    client._client = fake_boto
-    return client
+
+def _streaming_body(*sse_lines: str) -> StreamingBody:
+    """Wrap SSE lines in a real StreamingBody, as boto3 would return."""
+    raw = "".join(f"{line}\n" for line in sse_lines).encode("utf-8")
+    return StreamingBody(io.BytesIO(raw), len(raw))
 
 
 class TestAgentCoreClientInvoke:
-    """AgentCoreClient.invoke yields StreamEvent from boto3 streaming response."""
+    """AgentCoreClient.invoke streams StreamEvents and validates the request."""
 
-    async def test_invoke_yields_stream_events(self) -> None:
-        event_dict = {"type": "text", "agent_name": "agent", "data": {"text": "hi"}}
-        sse_line = f"data: {json.dumps(event_dict)}"
-        fake_body = FakeStreamingBody([sse_line.encode("utf-8")])
-        fake_boto = FakeBotoClient(invoke_response={"response": fake_body})
+    async def test_invoke_yields_stream_events_and_sends_correct_request(self) -> None:
+        client = _client()
+        event = {"type": "token", "agent_name": "a", "data": {"text": "hi"}}
+        with Stubber(client._client) as stub:
+            stub.add_response(
+                "invoke_agent_runtime",
+                {
+                    "response": _streaming_body(f"data: {json.dumps(event)}"),
+                    "contentType": "text/event-stream",
+                },
+                expected_params={
+                    "agentRuntimeArn": _ARN,
+                    "payload": b'{"prompt": "Hello world"}',
+                    "contentType": "application/json",
+                    "accept": "text/event-stream",
+                    "runtimeSessionId": _SID,
+                },
+            )
+            events = [e async for e in client.invoke("Hello world", session_id=_SID)]
 
-        client = _make_client(fake_boto)
-        session_id = "s" * 33
-        events = [event async for event in client.invoke("Hello", session_id=session_id)]
-
-        assert len(events) == 1
+        assert [e.type for e in events] == ["token"]
         assert isinstance(events[0], StreamEvent)
-        assert events[0].type == "text"
         client.close()
 
     async def test_invoke_translates_access_denied_error(self) -> None:
-        error_response = {"Error": {"Code": "AccessDeniedException", "Message": "denied"}}
-        client_error = ClientError(error_response, "InvokeAgentRuntime")
-        fake_boto = FakeBotoClient(invoke_error=client_error)
-
-        client = _make_client(fake_boto)
-        session_id = "s" * 33
-
-        with pytest.raises(AccessDeniedError):
-            _ = [event async for event in client.invoke("Hello", session_id=session_id)]
+        client = _client()
+        with Stubber(client._client) as stub:
+            stub.add_client_error(
+                "invoke_agent_runtime", service_error_code="AccessDeniedException"
+            )
+            with pytest.raises(AccessDeniedError):
+                _ = [e async for e in client.invoke("Hello", session_id=_SID)]
         client.close()
 
-    async def test_invoke_passes_correct_payload_shape(self) -> None:
-        fake_body = FakeStreamingBody([])
-        fake_boto = FakeBotoClient(invoke_response={"response": fake_body})
-
-        client = _make_client(fake_boto)
-        session_id = "s" * 33
-        _ = [event async for event in client.invoke("Hello world", session_id=session_id)]
-
-        assert len(fake_boto.invoke_calls) == 1
-        call = fake_boto.invoke_calls[0]
-        assert call["agentRuntimeArn"] == "arn:aws:bedrock:us-east-1:123:agent-runtime/test"
-        assert call["runtimeSessionId"] == session_id
-        payload = json.loads(call["payload"])
-        assert payload == {"prompt": "Hello world"}
+    async def test_invoke_retries_throttling_then_raises_throttled_error(self) -> None:
+        client = _client(retry=RetryConfig(max_retries=2, base_delay=0.01, jitter=False))
+        with Stubber(client._client) as stub:
+            for _ in range(3):  # initial attempt + 2 retries all throttled
+                stub.add_client_error(
+                    "invoke_agent_runtime", service_error_code="ThrottlingException"
+                )
+            with patch("strands_compose_agentcore.client.agentcore.asyncio.sleep") as mock_sleep:
+                mock_sleep.return_value = None
+                with pytest.raises(ThrottledError):
+                    _ = [e async for e in client.invoke("Hello", session_id=_SID)]
         client.close()
 
 
 class TestAgentCoreClientStopSession:
-    """AgentCoreClient.stop_session returns StopSessionResult."""
+    """AgentCoreClient.stop_session returns StopSessionResult or a typed error."""
 
     async def test_stop_session_returns_result(self) -> None:
-        session_id = "s" * 33
-        fake_boto = FakeBotoClient(
-            # invoke_response needed for constructor but not used here
-            invoke_response={"response": FakeStreamingBody([])},
-            stop_response={
-                "runtimeSessionId": session_id,
-                "statusCode": 200,
-            },
-        )
-
-        client = _make_client(fake_boto)
-        result = await client.stop_session(session_id)
+        client = _client()
+        with Stubber(client._client) as stub:
+            stub.add_response(
+                "stop_runtime_session",
+                {"runtimeSessionId": _SID, "statusCode": 200},
+                expected_params={"agentRuntimeArn": _ARN, "runtimeSessionId": _SID},
+            )
+            result = await client.stop_session(_SID)
 
         assert isinstance(result, StopSessionResult)
-        assert result.runtime_session_id == session_id
+        assert result.runtime_session_id == _SID
         assert result.status_code == 200
         client.close()
 
     async def test_stop_session_translates_access_denied(self) -> None:
-        error_response = {"Error": {"Code": "AccessDeniedException", "Message": "denied"}}
-        client_error = ClientError(error_response, "StopRuntimeSession")
-        fake_boto = FakeBotoClient(
-            invoke_response={"response": FakeStreamingBody([])},
-            stop_error=client_error,
-        )
-
-        client = _make_client(fake_boto)
-        session_id = "s" * 33
-
-        with pytest.raises(AccessDeniedError):
-            await client.stop_session(session_id)
+        client = _client()
+        with Stubber(client._client) as stub:
+            stub.add_client_error(
+                "stop_runtime_session", service_error_code="AccessDeniedException"
+            )
+            with pytest.raises(AccessDeniedError):
+                await client.stop_session(_SID)
         client.close()

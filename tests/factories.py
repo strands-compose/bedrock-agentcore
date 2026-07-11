@@ -10,6 +10,14 @@ from __future__ import annotations
 import base64
 from typing import Any
 
+# Standard limit kwargs for parse_payload.  Override only what a test cares
+# about via ``{**LIMITS, "max_payload_bytes": 10}``.
+LIMITS: dict[str, Any] = {
+    "max_payload_bytes": 25 * 1024 * 1024,
+    "max_media_bytes": 20 * 1024 * 1024,
+    "max_media_blocks": 20,
+}
+
 
 def payload(prompt: str | dict[str, Any] | list[Any] = "Hello") -> dict[str, Any]:
     """A minimal valid invocation payload. Override prompt to test variants."""

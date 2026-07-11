@@ -3,265 +3,322 @@ name: library-development
 description: Build and extend strands-compose-agentcore -- the deployment adapter that bridges strands-compose YAML configs to AWS Bedrock AgentCore Runtime. Use when adding or editing the app factory, session lifecycle, payload parsing, client transports, media helpers, CLI commands, or any server/client module. Source only; not tests, examples, or docs.
 metadata:
   area: library
-  stack: python,bedrock-agentcore,strands-compose,starlette,httpx,boto3
+  stack: python-3.11+,bedrock-agentcore,strands-compose,starlette,httpx,boto3
 ---
 
 # Library Development
 
-Rules for **strands-compose-agentcore** in `src/strands_compose_agentcore/`
-(Python >= 3.11 + BedrockAgentCoreApp + strands-compose + httpx + boto3). They
-describe the **mental model and conventions**, not the current set of files --
-modules and features come and go, the shape stays.
+The mental model and conventions for **strands-compose-agentcore**
+(`src/strands_compose_agentcore/`). This file teaches **how to think about the
+package and what patterns to reach for**. For where a given role lives and what
+to read first, load `references/project-map.md`.
 
 strands-compose-agentcore does exactly one thing: **wrap a strands-compose YAML
-config as a BedrockAgentCoreApp with SSE streaming, multimodal payloads, and a
-client trio for invoking it.** All agent/model/tool/session resolution is
-delegated to strands-compose. Before building anything that touches agent
-wiring, event streaming, or config parsing, check the installed
-strands-compose SDK (`.venv/lib/python*/site-packages/strands_compose/`) and
-use what it provides. This package is a thin adapter on top, not a framework.
+config as a `BedrockAgentCoreApp` with SSE streaming, multimodal payloads, and a
+client trio for invoking it.** All agent/model/tool/session resolution belongs
+to strands-compose. This package translates AgentCore Runtime conventions
+(headers, payload shape, SSE response, boto3 API) into strands-compose calls and
+gets out of the way. It is a thin adapter, not a framework.
 
-Before creating anything new, read a sibling that plays the same role and copy
-its shape. Matching the existing pattern matters more than any rule below. See
-`references/project-map.md` for where each role lives and what to read first --
-load it whenever you are unsure where something goes.
-
----
-
-## Core Principles -- NON-NEGOTIABLE
-
-1. **strands-compose-first** -- if strands-compose or strands provides it, import and use it directly; never re-implement resolution, streaming, rendering, or config parsing.
-2. **Thin adapter** -- translate AgentCore Runtime conventions (headers, payload shape, SSE response, boto3 API) to strands-compose calls, then get out of the way. Return strands-compose types (`StreamEvent`, `ResolvedConfig`, `EventQueue`), not wrappers.
-3. **Two-phase resolution is the architecture** -- infrastructure once at boot (`resolve_infra`), session lazily on first invocation (`load_session`). Never blur this boundary.
-4. **Explicit over implicit** -- no auto-registration, no global singletons, no hidden state. The app factory wires everything by hand; app state lives on `app.state`.
-5. **Single responsibility** -- each module does one thing: payload parsing, session lifecycle, media encoding, client transport, REPL, CLI commands.
-6. **Composition over inheritance** -- small functions and focused modules that compose. No base classes, no deep hierarchies.
-7. **Smallest reasonable change** -- don't refactor unrelated code to land a feature.
+Before building anything that touches agent wiring, event streaming, or config
+parsing, check the installed SDK
+(`.venv/lib/python*/site-packages/strands_compose/`) and use what it provides.
+Then read a sibling that plays the same role and copy its shape — matching the
+established pattern matters more than any single rule below.
 
 ---
 
-## The Two-Phase Lifecycle -- the central mental model
+## Core Principles — NON-NEGOTIABLE
 
-Everything the adapter does revolves around a clear temporal split. Understand
-this and you understand the whole package:
+1. **strands-compose-first.** If strands-compose or strands provides it, import
+   and use it directly. Never re-implement resolution, streaming, rendering, or
+   config parsing.
+2. **Thin adapter, deliberate coupling.** Translate AgentCore conventions to
+   strands-compose calls, then step aside. Pass through and re-export
+   strands-compose types (`StreamEvent`, `ResolvedConfig`, `EventQueue`); do not
+   wrap, shim, or re-version them. This coupling is intentional (see *Coupling
+   with strands-compose*).
+3. **Two-phase resolution is the architecture.** Infrastructure once at boot
+   (`resolve_infra`), session lazily on first invocation (`load_session`). Never
+   blur this boundary.
+4. **Single-flight by design.** One invocation at a time per pod. Concurrent
+   single-tenant invocations are rejected on purpose; multi-tenant concurrency
+   is out of scope (see *The Single-Flight Model*).
+5. **Explicit over implicit.** No auto-registration, no hidden global singletons.
+   The factory wires everything by hand. The one piece of request-scoped shared
+   state (the cached session on `app.state`) is deliberate, lock-guarded, and
+   documented — not incidental.
+6. **Single responsibility; composition over inheritance.** Small focused
+   modules and functions that compose. No base classes, no deep hierarchies.
+7. **Structured concurrency.** Target 3.11+ and use the stdlib primitives —
+   `asyncio.TaskGroup`, `asyncio.timeout`, `asyncio.to_thread`, `X | None`.
+   Don't hand-roll task, thread, or queue plumbing the stdlib provides (see
+   *Async & Concurrency*).
+8. **Smallest reasonable change.** Don't refactor unrelated code to land a
+   feature.
+
+---
+
+## The Two-Phase Lifecycle — the central mental model
+
+Everything the adapter does revolves around a temporal split between
+process-lifetime infrastructure and per-session state.
 
 ```
 create_app(config)
-  |
-  +--> prepare_app_state(config, infra)
-  |      load_config(config) -------> AppConfig        (strands-compose)
-  |      resolve_infra(config) -----> ResolvedInfra    (models, MCP -- shared, cold)
-  |
-  +--> BedrockAgentCoreApp(lifespan=...)
-         |
-         +--> lifespan startup
-         |      infra.mcp_lifecycle.start()            (MCP servers alive)
-         |      validate_mcp(infra)                    (connectivity probed)
-         |      app.state <- (app_config, infra, session=None)
-         |
-         +--> @app.entrypoint /invocations POST        (per-request)
-                |
-                +--> parse_payload(raw) ---------> AgentInput
-                +--> validate_session_id(header)
-                +--> resolve_session(config, infra, session_id) -+-> SessionState
-                |      load_session(config, infra, session_id)   |   (agents, EventQueue, lock)
-                |      resolved.wire_event_queue(session_id)     |
-                |                                                |
-                +--> session cached; reused for same session_id  |
-                +--> events.flush() + emit_session_start(manifest)
-                +--> run_entry_agent(resolved, events, input)
-                |      resolved.entry.invoke_async(input)
-                |      events -> StreamEvent -> yield asdict()
-                +--> events.close(data=session_end_data)
+  ├─ prepare_app_state -> AppConfig (load_config) + ResolvedInfra (resolve_infra)
+  │                        infra = models + MCP, shared and cold, NO session context
+  └─ BedrockAgentCoreApp(lifespan=...)
+       ├─ lifespan startup: start MCP lifecycle, probe connectivity,
+       │                     stash (app_config, infra, session=None) on app.state
+       └─ @app.entrypoint  /invocations POST  (per request)
+             parse_payload -> validate_session_id -> resolve_session (cached)
+             -> flush + emit session_start -> run_entry_agent -> close(session_end)
 ```
 
 Two hard boundaries:
 
 - **Infra vs session.** `resolve_infra` builds process-lifetime things (models,
   MCP servers/clients, lifecycle) with no session context. `resolve_session`
-  builds per-session things (agents, orchestrations, entry, EventQueue) using
-  the session ID from the AgentCore header. One infra serves many sessions
-  (sequentially in AgentCore's one-session-per-pod model, or if the pod is
-  recycled for a new session). Never store agents on infra.
-- **Server vs client.** The server side (`app.py`, `session.py`, `payload.py`,
-  `_utils.py`) runs inside the AgentCore Runtime pod. The client side
-  (`client/`) runs outside -- in user scripts, CLIs, or other services. They
-  share only the wire contract (`{"prompt": ...}` + SSE `StreamEvent` dicts)
-  and the `types.py` definitions.
+  builds per-session things (agents, orchestrations, entry, `EventQueue`) using
+  the session ID from the AgentCore header. One infra serves the pod's lifetime;
+  the session is resolved lazily, cached, and replaced only when a new session
+  ID arrives. **Never store agents or session managers on `ResolvedInfra`;
+  never resolve infrastructure per request.**
+- **Server vs client.** The server side runs inside the AgentCore pod; the
+  client side runs outside (user scripts, CLIs, other services). They share only
+  the wire contract (`{"prompt": ...}` + SSE `StreamEvent` dicts) and the public
+  `types`. Never mix server concerns into client modules or vice versa.
 
 ---
 
-## The Server Side -- app, session, payload
+## The Single-Flight Model — concurrency is deliberately not offered
 
-### `app.py` -- the factory
+This is an explicit design decision, not an omission:
 
-`create_app` is the one public entry point. It:
-1. Calls `prepare_app_state` to resolve config + infra.
-2. Builds a `BedrockAgentCoreApp` with a lifespan that starts MCP.
-3. Registers the `@app.entrypoint` coroutine for `/invocations`.
-4. Optionally adds CORS middleware.
-
-The entrypoint is a single async generator that yields `StreamEvent.asdict()`
-dicts. It handles: payload parsing, session ID validation, session
-resolution/caching, invocation locking (one at a time per pod), busy
-rejection, event flushing between turns, and graceful cancellation.
-
-### `session.py` -- lifecycle
-
-- `SessionState` dataclass: holds `resolved`, `events`, `session_id`, and
-  `invocation_lock`.
-- `resolve_session`: calls `load_session` + `wire_event_queue`, returns a
-  `SessionState`.
-- `run_entry_agent`: awaits `entry.invoke_async`, catches timeout + errors,
-  emits error events, always closes the queue with session-end data.
-
-### `payload.py` -- parsing
-
-Validates the `{"prompt": ...}` wire shape. Decodes base64 media into native
-bytes. Enforces size/count limits. Returns a `StrandsAgentInput`. All failures
-raise `MultimodalPayloadError` (a `ValueError` subclass).
-
-### `_utils.py` -- internal
-
-`validate_session_id` (33-256 chars), `error_event` builder, `prepare_app_state`
-(polymorphic config resolution), `ansi` TTY helper.
+- **One invocation at a time, per pod.** AgentCore allocates one microVM per
+  session, so cross-tenant isolation and multi-tenant concurrency are the
+  platform's job, not ours. We do not build for multi-tenant concurrency, and we
+  do not allow concurrent single-tenant invocations.
+- **The invocation lock enforces single-flight where the platform can't.** In
+  local development there is no microVM, so a caller could fire a second
+  `/invocations` before the first finishes. The lock rejects the second request
+  with an error event and `/ping` reports `HEALTHY_BUSY` so the runtime backs
+  off. Keep the lock; it is the local-dev guarantee of the production invariant.
+- **The cached session on `app.state` is the one sanctioned piece of shared
+  mutable state.** Because there is exactly one in-flight invocation, reasoning
+  about it stays simple: snapshot it once, and hold the lock across the run.
+  Preserve the "no `await` between the busy-check and the lock acquire" property
+  when editing the entrypoint — that is what makes the single-flight guarantee
+  correct on a single-threaded event loop.
+- **Do not add parallel-invocation support, work queues, or per-request agent
+  pools.** If a use case seems to need them, it belongs upstream or in a
+  different deployment shape, not here.
 
 ---
 
-## The Client Side -- three transports, one contract
+## Coupling with strands-compose — intentional, lockstep, single source of truth
 
-All three clients share the same input contract (`AgentInput = str |
-ContentBlock | list[ContentBlock]`) and yield `StreamEvent` objects. They
-differ only in transport:
+This package and strands-compose are maintained in parallel and released in
+lockstep (`strands-compose >=0.9.0,<1.0.0`). Treat that coupling as a feature:
 
-| Client | Transport | Use case |
-|--------|-----------|----------|
-| `LocalClient` | sync `urllib` | Scripts, CLIs, sync tests |
-| `AsyncLocalClient` | async `httpx` | Async servers, async tests |
-| `AgentCoreClient` | async boto3 + `ThreadPoolExecutor` | Deployed agents, production |
-
-Shared utilities in `client/utils.py`:
-- `build_invocation_body` -- assembles `{"prompt": ...}` from `AgentInput`.
-- `parse_sse_line` -- `"data: {...}"` -> `StreamEvent`.
-- `translate_error` -- botocore `ClientError` -> typed exception hierarchy.
-
-The REPL (`client/repl.py`) is shared across all three; each client provides a
-`stream_fn` closure.
+- **Trust strands-compose types and re-export them unchanged.** The clients
+  yield `StreamEvent`; the server passes `ResolvedConfig`/`EventQueue` around.
+  Re-export the strands-compose types that appear in our public API so they are
+  part of *our* declared surface, but never wrap, subclass, or re-version them.
+  One source of truth beats a defensive shim.
+- **We accept the maintenance contract.** A breaking change to a strands-compose
+  contract is fixed here immediately, in the same release train. Do not add
+  compatibility shims, feature detection, or version branches to soften upstream
+  changes — that would fork the source of truth.
+- **The only sanctioned deep imports** are the two runtime helpers that
+  strands-compose does not surface at top level (`startup.validate_mcp`,
+  `manifest.build_manifest`). Confine them behind a single internal boundary so
+  there is exactly one place to update if they move. Everything else comes from
+  the `strands_compose` top level.
 
 ---
 
-## Media -- format registry + client builders
+## Async & Concurrency — structured, cancellable, bounded
 
-The media subsystem has two halves:
+The adapter's core is a streaming pipeline; treat its concurrency with care.
 
-- **`media_formats.py`** -- the single source of truth. `MEDIA_FORMATS` is a
-  tuple of `MediaFormatSpec` dataclasses. Every other format set
-  (`IMAGE_FORMATS`, `DOCUMENT_FORMATS`, `_IMAGE_EXTENSIONS`,
-  `_DOCUMENT_EXTENSIONS`) is derived from it. To add a format, add one entry
-  here -- everything else picks it up.
-- **`media.py`** -- client-side builders: `text()`, `image()`, `document()`,
-  `reply()`. They read local files, infer formats from extensions, base64-encode
-  bytes, and return typed dicts matching the wire contract.
+- **Structured concurrency for the invocation — with one deliberate exception.**
+  Prefer `asyncio.TaskGroup` and `asyncio.timeout` (3.11+) over bare
+  `create_task` + manual bookkeeping. **Exception:** the `/invocations`
+  entrypoint is an *async generator* that `yield`s SSE events while a
+  background run task is alive. Holding a `TaskGroup` (or `asyncio.timeout`)
+  open *across a `yield`* is unsafe — a cancel scope suspended at a yield can
+  mis-scope or swallow cancellations (the motivation behind PEP 789; Trio
+  forbids it outright). So the entrypoint deliberately uses an explicit
+  `asyncio.create_task` guarded by `try/finally` that awaits the task on normal
+  completion and cancels-then-awaits it on early exit (consumer disconnect).
+  This is the sanctioned pattern for driving a background task from an
+  async-generator entrypoint — keep it. Non-generator coroutines (e.g.
+  `run_entry_agent`) have no yield boundary, so they use `asyncio.timeout`
+  normally. The run task must always be awaited or cancelled; never orphan it.
+- **Cancellation is a first-class path.** When the consumer disconnects
+  mid-stream, the run task is cancelled and awaited, and the queue is closed. Let
+  `CancelledError` propagate after cleanup; never swallow it.
+- **Bridge sync boto3 with `asyncio.to_thread`.** boto3 is blocking; wrap its
+  calls so the event loop is never stalled. A dedicated bounded executor is
+  justified only when a client fans out many concurrent streams — keep it bounded
+  and shut it down on close. Don't hand-roll thread/queue plumbing the stdlib
+  provides.
+- **Respect backpressure; never buffer unboundedly.** The event stream can be
+  long-lived. Drain the queue as events arrive and yield straight through; do not
+  accumulate events in an unbounded list. Queue mechanics belong to
+  strands-compose — do not add a second, unbounded buffer of your own.
 
-The server side (`payload.py`) re-validates and decodes these blocks. The two
-sides are intentionally independent -- the builders trust the caller, the parser
-trusts nothing.
+---
+
+## The Wire Contract — one shape, two sides, typed errors
+
+The client and server must never drift on the wire. The contract is:
+
+- **Request:** a single `{"prompt": ...}` key whose value is a `str`, one content
+  block, or a non-empty list of blocks. This matches the AgentCore `/invocations`
+  JSON input; AgentCore passes the body through unvalidated, so **payload
+  validation is our responsibility.**
+- **Client → wire:** `build_invocation_body` assembles the body; the `media`
+  builders produce blocks. Builders trust the caller.
+- **Wire → server:** `parse_payload` validates shape, decodes base64 media into
+  native bytes, enforces size/count limits, and raises `MultimodalPayloadError`.
+  The parser trusts nothing.
+- **Response:** SSE `StreamEvent` dicts, one per line. Failures do not become HTTP
+  errors — they become a single `type="error"` event and the generator returns
+  normally, keeping the SSE connection intact for the one response.
+- **Error events mirror the upstream error schema — do not fork it.** When
+  strands-compose emits an agent-level ``ERROR`` event it carries
+  ``data={"text": <human message>, "exception_type": <class name>}`` (see
+  ``strands_compose.hooks.event_publisher``). Adapter-level error events must
+  use the **same two keys** so a single consumer can branch on
+  ``exception_type`` regardless of whether the failure came from the agent or
+  the adapter. Pass ``type(exc).__name__`` for real exceptions or a stable
+  synthetic token (e.g. ``"AgentBusy"``) for adapter-originated errors. Never
+  invent an adapter-only discriminator field (there is no ``code`` in the
+  strands-compose contract) — that would fork the single source of truth the
+  clients render against.
+
+---
+
+## Media — one registry, derive everything
+
+- **`MEDIA_FORMATS` is the single source of truth.** Every other format set
+  (`IMAGE_FORMATS`, `DOCUMENT_FORMATS`, extension maps) derives from it. To add a
+  format, add one `MediaFormatSpec` entry — nothing else changes.
+- **Builders trust, parser verifies.** Client-side builders read files, infer
+  formats, and base64-encode. The server-side parser re-validates and decodes.
+  The two sides are intentionally independent.
 
 ---
 
 ## Types and Exceptions
 
-`types.py` defines the public type vocabulary:
-- Content blocks: `TextBlock`, `ImageBlock`, `DocumentBlock`, `ReplyBlock`,
-  `ContentBlock` (union), `AgentInput` (union).
-- Format literals: `ImageFormat`, `DocumentFormat`.
-- Format sets: `IMAGE_FORMATS`, `DOCUMENT_FORMATS` (derived from registry).
-- Exception hierarchy: `AgentCoreClientError` base with `ClientConnectionError`,
-  `AccessDeniedError`, `ThrottledError`, `SessionNotFoundError`,
-  `InvalidRequestError`, `ConflictError`, `RetryableConflictError`.
-- `RetryConfig` dataclass for exponential backoff.
+- **Public type vocabulary lives in one place** (`types`): content-block types,
+  format literals, the derived format sets, the exception hierarchy, and config
+  dataclasses.
+- **One base exception, typed subtypes.** `AgentCoreClientError` is the base
+  callers can catch; each AWS error code maps 1:1 to a subclass via the error
+  map. Subtypes carry actionable meaning (access denied, throttled, not found,
+  conflict, retryable conflict). Prefer built-in exceptions for generic failures
+  (`ValueError`, `TypeError`); reach for a custom type only for a domain-specific
+  contract.
+- **Give exceptions the context callers act on** — a stable code and the offending
+  identifier — not a prose sentence that tests or callers must match.
 
 ---
 
-## CLI -- thin dispatch
+## Observability & Logging — structured, correlated, secret-free
 
-`cli/__init__.py` builds the argparse tree and dispatches to command handlers.
-Each command is a separate module:
-- `cli/dev.py` -- `cmd_dev`: starts server in a daemon thread, polls `/ping`,
-  launches REPL in the main thread.
-- `cli/client.py` -- `cmd_client`: dispatches to `LocalClient.repl()` or
-  `AgentCoreClient.repl()`.
-- `cli/utils.py` -- `CLIError` exception, ANSI colour helpers.
+The adapter runs inside AgentCore, which auto-instruments OpenTelemetry and
+ingests logs as JSON. Work with the platform, not around it:
 
-`main()` catches `CLIError` and exits cleanly. Console scripts: `sca` and
-`strands-compose-agentcore`.
+- **Do not reinvent tracing.** AgentCore/OTEL provides the trace backbone. Emit
+  spans/attributes through the platform's instrumentation rather than building a
+  parallel tracing layer.
+- **Log structured, greppable key/value fields**, and always include the
+  correlating `session_id` where available. The platform's JSON handler turns
+  these into queryable fields; in local dev they stay human-readable.
+- **One module logger** (`logging.getLogger(__name__)`); **`print()` only for
+  CLI/REPL user output.**
+- **`%s` lazy interpolation, never f-strings** in log calls (avoids formatting
+  cost when the level is disabled). Field-value pairs first (`key=<value>`,
+  comma-separated), human message after ` | `; `<>` around values so empty
+  strings are visible; lowercase, no trailing punctuation.
+- **Never log payload contents, media bytes, credentials, or tokens.** Log
+  shapes, sizes, types, and identifiers — not user data.
+
+```python
+logger.info("session_id=<%s> | session resolved, agents ready", session_id)
+logger.warning("session_id=<%s>, busy_session_id=<%s> | invocation rejected", sid, busy)
+```
+
+---
+
+## Security
+
+- **Payload limits are a DoS boundary, not a nicety.** `max_payload_bytes`,
+  `max_media_bytes`, and `max_media_blocks` cap attacker-controlled input; keep
+  them enforced in the parser and reject over-limit input before decoding.
+- **Rely on the microVM for isolation.** Each session runs in its own microVM
+  with an isolated CPU/memory/filesystem that is destroyed after the session, so
+  the adapter does not re-defend that boundary — but it also must not weaken it
+  (no cross-session caching of user data, no writing secrets to disk).
+- **No `eval`/`exec`, no `pickle` on untrusted data, no `subprocess(shell=True)`,
+  no hardcoded secrets.** Validate everything crossing the wire.
 
 ---
 
 ## Python Conventions
 
 - **`from __future__ import annotations`** at the top of every module.
-- **Module docstring** describing the module's single responsibility.
-- **Fully typed signatures** -- every function/method declares parameter and
-  return types. Use `X | None`, `X | Y`, `list`, `dict`, `tuple` -- never
-  `Optional`, `Union`, `List`, `Dict`.
-- **Google-style docstrings** on every public class, function, and method, with
-  `Args:` / `Returns:` / `Raises:`. Class docstrings go on `__init__` except
-  `@dataclass` classes (use the class body).
-- **Early returns** -- handle edge cases first; keep nesting <= 3 levels.
-- **Raise specific exceptions** (`ValueError`, `TypeError`, `RuntimeError`,
-  `MultimodalPayloadError`, `CLIError`, or a typed `AgentCoreClientError`
-  subclass) with a contextual message.
-- **Never swallow exceptions silently**; no bare `except:`. The sanctioned broad
-  catch is best-effort cleanup (e.g. cancelling tasks, closing streams): catch
-  `Exception`, log it, and continue.
-- **`__all__` only in `__init__.py`** and `client/__init__.py` -- these are the
-  public API surfaces.
-- **Import order** stdlib -> third-party -> local (ruff-enforced, autofixed).
-- Use `print()` **only** for user-facing CLI/REPL output. All diagnostics go
-  through `logging.getLogger(__name__)`.
+- **Module docstring** stating the module's single responsibility.
+- **Fully typed signatures.** Use `X | None`, `X | Y`, `list`, `dict`, `tuple` —
+  never `Optional`, `Union`, `List`, `Dict`. On 3.12+, prefer the `type`
+  statement (PEP 695) for aliases; on 3.11 use `TypeAlias`.
+- **Google-style docstrings** on every public class, function, and method
+  (`Args:` / `Returns:` / `Raises:`). Class docstrings on `__init__` except
+  `@dataclass` (use the class body).
+- **Early returns; nesting ≤ 3 levels.**
+- **Raise specific exceptions with context.** Never swallow silently; no bare
+  `except:`. The only sanctioned broad catch is best-effort cleanup (cancelling
+  tasks, closing streams): catch `Exception`, log it, continue — and re-raise
+  `CancelledError`.
+- **`__all__` only in the public API surfaces** (`__init__.py`,
+  `client/__init__.py`).
+- **Import order** stdlib → third-party → local (ruff-enforced).
 - Run modules with `uv run python ...`, never bare `python`.
 
 ---
 
-## Logging
+## Versioning & Compatibility
 
-One module-level logger: `logger = logging.getLogger(__name__)`. Never
-`print()` for diagnostics.
-
-Use `%s` interpolation with structured field-value pairs -- never f-strings:
-
-```python
-logger.info("session_id=<%s> | session resolved, agents ready", session_id)
-logger.warning("session_id=<%s>, busy_session_id=<%s> | invocation rejected", sid, cached.session_id)
-```
-
-- Field-value pairs first (`key=<value>`, comma-separated), human message after ` | `.
-- `<>` around values (makes empty strings visible).
-- Lowercase messages, no trailing punctuation.
-- `%s` format args, not f-strings (lazy evaluation, hard rule).
+- **The public API is a contract.** What top-level `__init__` exports — including
+  the re-exported strands-compose types — is what consumers depend on. Adding is
+  cheap; removing or changing shape is a breaking change.
+- **SemVer, tracking strands-compose in lockstep.** The adapter's version moves
+  with the strands-compose contract it targets. When upstream makes a breaking
+  change, this package makes a corresponding breaking release rather than
+  shimming — the deliberate coupling is the compatibility policy.
 
 ---
 
-## Adding to the Project -- Checklist
+## Adding to the Project — Checklist
 
-1. **Decide which side it belongs to** -- server (`app.py`, `session.py`,
-   `payload.py`, `_utils.py`) or client (`client/`) or shared types
-   (`types.py`, `media.py`, `media_formats.py`) or CLI (`cli/`). Unsure ->
+1. **Which side?** Server, client, shared types/media, or CLI. Unsure →
    `references/project-map.md`.
-2. **Read a sibling first.** Open an existing module of the same role and mirror
-   its shape, docstrings, and error style.
-3. **Check whether strands-compose already provides it.** Import from
-   `strands_compose` top-level; never reach into submodules (exception:
-   `strands_compose.startup.validate_mcp` and `strands_compose.manifest.build_manifest`).
-4. **New media format?** Add one `MediaFormatSpec` entry to `MEDIA_FORMATS` --
-   everything else derives from it.
-5. **New exception?** Subclass `AgentCoreClientError` in `types.py`, add to
-   `_ERROR_MAP` in `client/utils.py`, export from `client/__init__.py` and
-   package `__init__.py`.
-6. **New CLI command?** Add a `cmd_<name>` function in a new `cli/<name>.py`,
-   wire it in `_build_parser`.
-7. **Verify** before declaring done -- see Verify.
+2. **Read a sibling first** and mirror its shape, docstrings, and error style.
+3. **Check strands-compose first** — import from the top level; confine the two
+   sanctioned deep imports behind the existing internal boundary.
+4. **New media format?** One `MediaFormatSpec` entry in the registry.
+5. **New exception?** Subclass `AgentCoreClientError`, add to the error map,
+   export from both public surfaces.
+6. **New CLI command?** New `cmd_<name>` module, wired into the parser; use
+   `CLIError` for user-facing failures.
+7. **Touching the entrypoint?** Preserve single-flight (the busy-check → lock
+   acquire has no `await` between it) and structured task lifetimes.
+8. **Verify** before declaring done.
 
 ---
 
@@ -271,33 +328,40 @@ Run from the repository root:
 
 ```bash
 uv run just check    # ruff format-check + ruff lint + ty type-check + bandit
-uv run just test     # pytest with --numprocesses=2 --cov --cov-fail-under=90
+uv run just test     # pytest suite (see the library-testing skill for the gate)
 ```
 
 `just check` is the gate; it must pass before a change is done. If lint fails,
-`uv run just format` first, then re-run. Do not start the app server to verify
--- rely on `check` and `test`.
+run `uv run just format` first, then re-run. Do not start the app server to
+verify — rely on `check` and `test`.
 
 ---
 
 ## Things NOT to Do
 
-- Don't re-implement what strands-compose or strands provides -- check first.
-- Don't blur the infra/session boundary -- never store agents or session
-  managers on `ResolvedInfra`, never resolve infrastructure per-request.
-- Don't mix server concerns into client modules or vice versa.
-- Don't add format tables outside `media_formats.py` -- derive from
-  `MEDIA_FORMATS`.
-- Don't mock or patch strands-compose internals in production code -- use the
-  public API (`load_config`, `resolve_infra`, `load_session`).
-- Don't use `Optional[X]` / `Union` / `List` / `Dict`, leave a signature
-  untyped, or shadow a builtin.
-- Don't `print()` for diagnostics -- use the logger with `%s` and field-value
-  pairs. `print()` is reserved for CLI/REPL user output.
-- Don't swallow exceptions silently or use bare `except:`.
-- Don't add `__all__` outside `__init__.py` boundaries.
-- Don't hardcode secrets; don't use `eval`/`exec`, `pickle` on untrusted data,
-  or `subprocess(shell=True)`.
-- Don't add files or folders outside the scope of the task.
-- Don't leave broken or commented-out code.
-- Comments explain **what** and **why**, never **when** or **how it changed**.
+- Don't re-implement what strands-compose or strands provides.
+- Don't blur the infra/session boundary — no agents on `ResolvedInfra`, no
+  per-request infrastructure resolution.
+- Don't add concurrent-invocation support or multi-tenant concurrency — the
+  single-flight model is deliberate.
+- Don't wrap, subclass, or re-version strands-compose types, or add compatibility
+  shims for upstream changes — fix in lockstep instead.
+- Don't hand-roll task/thread/queue plumbing the stdlib provides
+  (`TaskGroup`, `asyncio.timeout`, `asyncio.to_thread`) — **except** the
+  async-generator entrypoint, which uses an explicit `create_task` + `try/finally`
+  on purpose (yielding across a `TaskGroup`/`timeout` is unsafe; see
+  *Async & Concurrency*).
+- Don't buffer the event stream unboundedly, or swallow `CancelledError`.
+- Don't mix server and client concerns, or add format tables outside the registry.
+- Don't emit an error event that diverges from the upstream error schema
+  (`data` must use `text` + `exception_type`); don't invent an adapter-only
+  `code` field.
+- Don't log payload contents, media bytes, or secrets; don't `print()` for
+  diagnostics or use f-strings in log calls.
+- Don't use `Optional`/`Union`/`List`/`Dict`, leave a signature untyped, or
+  shadow a builtin.
+- Don't add `__all__` outside the public API surfaces.
+- Don't hardcode secrets; no `eval`/`exec`, `pickle` on untrusted data, or
+  `subprocess(shell=True)`.
+- Don't leave broken or commented-out code; comments explain **what** and **why**,
+  never **when** or **how it changed**.

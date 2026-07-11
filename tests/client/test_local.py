@@ -17,7 +17,6 @@ from strands_compose import StreamEvent
 
 from strands_compose_agentcore.client.local import AsyncLocalClient, LocalClient
 from strands_compose_agentcore.types import ClientConnectionError
-
 from tests.fakes.transport import FakeUrlResponse
 
 

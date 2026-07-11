@@ -13,7 +13,6 @@ from typing import Any, Literal, TypeAlias, TypedDict
 
 from .media_formats import MEDIA_FORMATS
 
-
 # ---------------------------------------------------------------------------
 # Invocation content
 # ---------------------------------------------------------------------------

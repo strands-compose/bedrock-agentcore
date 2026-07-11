@@ -1,38 +1,41 @@
-# Test Patterns -- the toolbox
+# Test Patterns — the toolbox
 
 Concrete, copy-paste templates for the doctrine in `SKILL.md`. Load this only
-when actually writing a test. Exact names drift -- trust the **shapes** and
-adapt to the current public API (`strands_compose_agentcore/__init__.py`) and
-the module structure.
+when actually writing a test. Exact names drift — trust the **shapes** and adapt
+to the current public API (`strands_compose_agentcore/__init__.py`) and module
+structure.
 
-Everything here obeys two rules from the doctrine: **fake strands-compose at our
-own resolution/invocation seam**, and **assert on shape / type / yielded event /
-raised exception -- never on private members, mock calls, or message text.**
+Everything here obeys the doctrine: **fake strands-compose at our own
+resolution/invocation seam** (or use a real object), **fake transports at the
+vendor's test seam** (`botocore.Stubber`, `httpx.MockTransport`), **control
+timing with gates, never sleeps**, and **assert on shape / type / yielded-event
+order — never on private members, mock calls, or message prose.**
 
 ---
 
-## 1. Owned fakes -- `tests/fakes/compose.py`
+## 1. Owned fakes — `tests/fakes/compose.py`
 
-One authoritative fake per external seam. These stand in for strands-compose
-resolution and agent execution so tests never hit a real model, MCP server, or
-network.
+One authoritative fake per external seam. `FakeEntry` covers every entry-agent
+outcome the doctrine cares about — success, raise, timeout/never-complete, and a
+gated run for deterministic concurrency tests. `EventQueue` is **real** (owned by
+strands-compose, cheap, deterministic).
 
 ```python
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
-from strands_compose import EventQueue, StreamEvent
+from strands_compose import EventQueue
 
 
 class FakeEntry:
-    """Stands in for a resolved entry agent/orchestration.
+    """Stands in for a resolved entry agent / orchestration.
 
-    ``invoke_async`` returns immediately with a canned result, or raises
-    a configured exception.  No real model call, no real strands Agent.
+    ``invoke_async`` returns a canned result, raises a configured error, or —
+    when ``gate`` is set — waits on that event so a test can control *when* the
+    run completes (timeout, cancellation, "still running" / busy).
     """
 
     def __init__(
@@ -40,18 +43,18 @@ class FakeEntry:
         *,
         result: Any = None,
         error: Exception | None = None,
-        delay: float = 0,
+        gate: asyncio.Event | None = None,
     ) -> None:
         self.result = result
         self.error = error
-        self.delay = delay
+        self.gate = gate
         self.calls: list[Any] = []
 
     async def invoke_async(self, agent_input: Any) -> Any:
         self.calls.append(agent_input)
-        if self.delay:
-            await asyncio.sleep(self.delay)
-        if self.error:
+        if self.gate is not None:
+            await self.gate.wait()      # never returns until the test sets it
+        if self.error is not None:
             raise self.error
         return self.result
 
@@ -60,8 +63,8 @@ class FakeEntry:
 class FakeResolvedConfig:
     """Minimal stand-in for strands_compose.ResolvedConfig.
 
-    Only the fields our adapter actually reads are present:
-    ``entry``, ``agents``, ``orchestrators``.
+    Only the fields our adapter reads are present. ``wire_event_queue`` returns
+    a REAL EventQueue so drain/close behaviour is exercised for real.
     """
 
     entry: FakeEntry = field(default_factory=FakeEntry)
@@ -69,9 +72,6 @@ class FakeResolvedConfig:
     orchestrators: dict = field(default_factory=dict)
 
     def wire_event_queue(self, session_id: str | None = None) -> EventQueue:
-        """Return a real EventQueue wired to nothing (no hooks to fire)."""
-        from strands_compose import EventQueue
-
         return EventQueue(session_id=session_id)
 
 
@@ -79,23 +79,76 @@ class FakeResolvedConfig:
 class FakeSessionState:
     """Pre-built SessionState for app entrypoint tests.
 
-    Pre-loaded with a FakeResolvedConfig and a real EventQueue so the
-    entrypoint can drain events without hitting strands-compose.
+    Mirrors the real ``SessionState``: a resolved config, a real EventQueue, a
+    session id, and a real asyncio.Lock (so locking tests use the real primitive).
     """
 
     resolved: FakeResolvedConfig = field(default_factory=FakeResolvedConfig)
     events: EventQueue = field(default_factory=EventQueue)
-    session_id: str | None = "test-session-id-that-is-long-enough-for-validation"
+    session_id: str | None = "a-session-id-long-enough-to-pass-validation-0001"
     invocation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 ```
 
 ---
 
-## 2. Payload builders -- `tests/factories.py`
+## 2. Transport fakes — `tests/fakes/transport.py`
 
-Builders make relevant inputs visible and hide boilerplate. Provide both raw
-dict builders (for `parse_payload` tests) and content-block builders (for client
-tests).
+Fake at the vendor test seam so request shapes stay validated.
+
+```python
+from __future__ import annotations
+
+from contextlib import contextmanager
+
+import httpx
+
+
+class FakeUrlopenResponse:
+    """Stands in for the urllib response context manager used by LocalClient.
+
+    Iterating yields raw SSE ``bytes`` lines, matching ``for raw_line in resp``.
+    """
+
+    def __init__(self, lines: list[bytes]) -> None:
+        self._lines = lines
+
+    def __enter__(self) -> "FakeUrlopenResponse":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def __iter__(self):
+        return iter(self._lines)
+
+
+def sse_transport(lines: list[str]) -> httpx.MockTransport:
+    """An httpx.MockTransport that streams the given SSE lines for AsyncLocalClient."""
+    body = "".join(f"{line}\n" for line in lines).encode()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body, headers={"content-type": "text/event-stream"})
+
+    return httpx.MockTransport(handler)
+
+
+@contextmanager
+def stubbed_agentcore(client, response: dict | None = None, error=None):
+    """Yield a botocore Stubber primed on the AgentCoreClient's boto3 client.
+
+    Use ``add_response`` (validates the request shape against the real API) or
+    ``add_client_error`` to force a ClientError. See tests/client/test_agentcore.py.
+    """
+    from botocore.stub import Stubber
+
+    stubber = Stubber(client._client)
+    with stubber:
+        yield stubber
+```
+
+---
+
+## 3. Payload / body builders — `tests/factories.py`
 
 ```python
 from __future__ import annotations
@@ -104,70 +157,82 @@ import base64
 from typing import Any
 
 
-def payload(prompt: str | dict | list = "Hello") -> dict[str, Any]:
+def payload(prompt: Any = "Hello") -> dict[str, Any]:
     """A minimal valid invocation payload. Override prompt to test variants."""
     return {"prompt": prompt}
 
 
-def image_payload(
-    *,
-    format: str = "png",
-    data: bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100,
-) -> dict[str, Any]:
-    """A payload containing one image block with valid base64 source."""
-    return {
-        "prompt": [
-            {
-                "image": {
-                    "format": format,
-                    "source": {"base64": base64.b64encode(data).decode()},
-                }
-            }
-        ]
-    }
+def image_payload(*, format: str = "png", data: bytes = b"\x89PNG\r\n\x1a\n") -> dict[str, Any]:
+    return {"prompt": [{"image": {"format": format, "source": {"base64": _b64(data)}}}]}
 
 
 def document_payload(
-    *,
-    format: str = "pdf",
-    name: str = "report",
-    data: bytes = b"%PDF-1.4" + b"\x00" * 100,
+    *, format: str = "pdf", name: str = "report.pdf", data: bytes = b"%PDF-1.4"
 ) -> dict[str, Any]:
-    """A payload containing one document block with valid base64 source."""
     return {
         "prompt": [
-            {
-                "document": {
-                    "format": format,
-                    "name": name,
-                    "source": {"base64": base64.b64encode(data).decode()},
-                }
-            }
+            {"document": {"format": format, "name": name, "source": {"base64": _b64(data)}}}
         ]
     }
 
 
-def reply_payload(
-    interrupt_id: str = "int-001",
-    response: Any = "yes",
-) -> dict[str, Any]:
-    """A payload containing one reply block."""
-    return {
-        "prompt": [{"reply": {"interrupt_id": interrupt_id, "response": response}}]
-    }
+def reply_payload(interrupt_id: str = "int-001", response: Any = "yes") -> dict[str, Any]:
+    return {"prompt": [{"reply": {"interrupt_id": interrupt_id, "response": response}}]}
 
 
-def text_block_payload(text: str = "Hello world") -> dict[str, Any]:
-    """A payload containing one text block."""
-    return {"prompt": [{"text": text}]}
+def _b64(data: bytes) -> str:
+    return base64.b64encode(data).decode("ascii")
+
+
+# Standard limit kwargs for parse_payload; override only what a test cares about.
+LIMITS: dict[str, Any] = {
+    "max_payload_bytes": 1024 * 1024,
+    "max_media_bytes": 1024 * 1024,
+    "max_media_blocks": 5,
+}
 ```
 
 ---
 
-## 3. Payload parsing tests -- `tests/server/test_payload.py`
+## 4. The wire round-trip — `tests/contract/test_roundtrip.py`
 
-Test through the public `parse_payload` function. Assert on the decoded value's
-type and structure, or the exception type.
+The single most valuable test: a block built on the client survives assembly and
+parses to the expected Strands shape on the server. Catches client/server drift.
+
+```python
+from __future__ import annotations
+
+from strands_compose_agentcore import document, image, reply, text
+from strands_compose_agentcore.client.utils import build_invocation_body
+from strands_compose_agentcore.payload import parse_payload
+from tests.factories import LIMITS
+
+
+def test_text_block_round_trips_to_strands_shape():
+    body = build_invocation_body([text("hello")])
+    result = parse_payload(body, **LIMITS)
+    assert result == [{"text": "hello"}]
+
+
+def test_image_block_round_trips_bytes():
+    body = build_invocation_body([image(b"\x89PNG\r\n\x1a\n", format="png")])
+    result = parse_payload(body, **LIMITS)
+    assert result[0]["image"]["format"] == "png"
+    assert isinstance(result[0]["image"]["source"]["bytes"], bytes)
+
+
+def test_reply_block_round_trips_to_interrupt_response():
+    body = build_invocation_body([reply("int-1", "yes")])
+    result = parse_payload(body, **LIMITS)
+    assert result == [{"interruptId": "int-1", "response": "yes"}]
+```
+
+---
+
+## 5. Payload parsing — `tests/server/test_payload.py`
+
+Assert the decoded value's type/structure, or the exception *type*. `match=`
+targets a stable field/limit token only.
 
 ```python
 from __future__ import annotations
@@ -175,232 +240,245 @@ from __future__ import annotations
 import pytest
 
 from strands_compose_agentcore.payload import MultimodalPayloadError, parse_payload
-from tests.factories import document_payload, image_payload, payload, reply_payload
+from tests.factories import LIMITS, image_payload, payload
 
 
 def test_string_prompt_returns_str():
-    result = parse_payload(payload("Hi"), max_payload_bytes=None, max_media_bytes=20_000_000, max_media_blocks=20)
-    assert result == "Hi"
+    assert parse_payload(payload("Hi"), **LIMITS) == "Hi"
 
 
 def test_image_block_decodes_base64_to_bytes():
-    result = parse_payload(
-        image_payload(),
-        max_payload_bytes=None,
-        max_media_bytes=20_000_000,
-        max_media_blocks=20,
-    )
-    assert isinstance(result, list)
-    assert "image" in result[0]
+    result = parse_payload(image_payload(), **LIMITS)
     assert isinstance(result[0]["image"]["source"]["bytes"], bytes)
 
 
-def test_oversized_payload_raises_error():
-    big = payload("x" * 1000)
-    with pytest.raises(MultimodalPayloadError, match="max_payload_bytes"):
-        parse_payload(big, max_payload_bytes=10, max_media_bytes=20_000_000, max_media_blocks=20)
-
-
-def test_missing_prompt_raises_error():
+def test_missing_prompt_raises_payload_error():
+    # type is contract; 'prompt' is a stable wire-field token, not prose.
     with pytest.raises(MultimodalPayloadError, match="prompt"):
-        parse_payload({}, max_payload_bytes=None, max_media_bytes=20_000_000, max_media_blocks=20)
+        parse_payload({}, **LIMITS)
 
 
-def test_unsupported_image_format_raises_error():
-    bad = image_payload(format="bmp")
-    with pytest.raises(MultimodalPayloadError, match="not supported"):
-        parse_payload(bad, max_payload_bytes=None, max_media_bytes=20_000_000, max_media_blocks=20)
+def test_oversized_payload_rejected():
+    with pytest.raises(MultimodalPayloadError, match="max_payload_bytes"):
+        parse_payload(payload("x" * 1000), **{**LIMITS, "max_payload_bytes": 10})
+
+
+@pytest.mark.parametrize("bad_format", ["bmp", "tiff", "mp4"])
+def test_unsupported_image_format_rejected(bad_format):
+    with pytest.raises(MultimodalPayloadError):
+        parse_payload(image_payload(format=bad_format), **LIMITS)
 ```
 
 ---
 
-## 4. Session lifecycle tests -- `tests/server/test_session.py`
+## 6. Entry-agent run — `tests/server/test_session.py`
 
-Fake `load_session` at our seam. Assert on the observable outcome: events placed
-on the queue, queue closed, error events on failure.
+Real `EventQueue`; `FakeEntry` controls the outcome. Assert events-on-queue and
+that the queue closes (drain to `None`). Gates, not sleeps.
 
 ```python
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import patch
 
 import pytest
 
-from strands_compose_agentcore.session import resolve_session, run_entry_agent
+from strands_compose_agentcore.session import run_entry_agent
 from tests.fakes.compose import FakeEntry, FakeResolvedConfig
 
 
-def test_resolve_session_returns_session_state_with_event_queue():
-    fake_resolved = FakeResolvedConfig()
-    with patch(
-        "strands_compose_agentcore.session.load_session",
-        return_value=fake_resolved,
-    ):
-        state = resolve_session(None, None, "a" * 40)
-
-    assert state.events is not None
-    assert state.session_id == "a" * 40
+async def _drain(events) -> list:
+    collected = []
+    while (ev := await events.get()) is not None:
+        collected.append(ev)
+    return collected
 
 
-async def test_run_entry_agent_closes_queue_on_success():
-    entry = FakeEntry(result="done")
-    resolved = FakeResolvedConfig(entry=entry)
-    events = resolved.wire_event_queue(session_id="test")
+async def test_run_closes_queue_on_success():
+    resolved = FakeResolvedConfig(entry=FakeEntry(result="done"))
+    events = resolved.wire_event_queue(session_id="s")
     events.flush()
 
     await run_entry_agent(resolved, events, "Hello")
 
-    # Queue is closed -- get() returns None (sentinel)
-    assert await events.get() is None
+    assert await events.get() is None  # closed
 
 
-async def test_run_entry_agent_emits_error_on_timeout():
-    entry = FakeEntry(delay=10)  # will exceed timeout
-    resolved = FakeResolvedConfig(entry=entry)
-    events = resolved.wire_event_queue(session_id="test")
+async def test_run_emits_error_event_then_closes_on_failure():
+    resolved = FakeResolvedConfig(entry=FakeEntry(error=RuntimeError("boom")))
+    events = resolved.wire_event_queue(session_id="s")
+    events.flush()
+
+    await run_entry_agent(resolved, events, "Hello")
+
+    collected = await _drain(events)
+    assert any(e.type == "error" for e in collected)
+
+
+async def test_run_times_out_via_gate_not_clock():
+    gate = asyncio.Event()  # never set -> entry never completes on its own
+    resolved = FakeResolvedConfig(entry=FakeEntry(gate=gate))
+    events = resolved.wire_event_queue(session_id="s")
     events.flush()
 
     await run_entry_agent(resolved, events, "Hello", invocation_timeout=0.01)
 
-    # Drain: should contain an error event before close
-    collected = []
-    while (ev := await events.get()) is not None:
-        collected.append(ev)
+    collected = await _drain(events)
     assert any(e.type == "error" for e in collected)
+
+
+@pytest.mark.parametrize("bad", [0, -1, float("nan")])
+async def test_non_positive_timeout_raises(bad):
+    resolved = FakeResolvedConfig()
+    events = resolved.wire_event_queue()
+    with pytest.raises(ValueError, match="invocation_timeout"):
+        await run_entry_agent(resolved, events, "Hi", invocation_timeout=bad)
 ```
 
 ---
 
-## 5. App integration test -- `tests/server/test_app.py`
+## 7. App streaming, faults, locking — `tests/server/test_app.py`
 
-Drive the ASGI app via Starlette TestClient or httpx ASGITransport. Fake the
-session resolution seam so no real agents run.
+Drive the ASGI app; fake `resolve_session`. Assert lifecycle *order* and that
+failures degrade to an error event. Mark `integration`.
 
 ```python
 from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
 from starlette.testclient import TestClient
 
 from strands_compose_agentcore.app import create_app
 from tests.fakes.compose import FakeSessionState
 
-
-def _make_app():
-    """Build an app with faked infrastructure (no real config needed)."""
-    with patch("strands_compose_agentcore._utils.prepare_app_state") as mock_prep:
-        mock_prep.return_value = (None, None)  # app_config, infra
-        with patch("strands_compose_agentcore.app._make_lifespan") as mock_ls:
-            # Skip real lifespan -- inject state directly
-            from contextlib import asynccontextmanager
-
-            @asynccontextmanager
-            async def _noop_lifespan(app):
-                app.state.app_config = None
-                app.state.infra = None
-                app.state.session = None
-                yield
-
-            mock_ls.return_value = _noop_lifespan
-            app = create_app("dummy")
-    return app
+_SID = {"X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": "a-session-id-long-enough-to-pass-0001"}
+pytestmark = pytest.mark.integration
 
 
-def test_invocations_returns_sse_events():
-    app = _make_app()
-    fake_session = FakeSessionState()
-    with patch(
-        "strands_compose_agentcore.app.resolve_session",
-        return_value=fake_session,
-    ):
-        client = TestClient(app, raise_server_exceptions=False)
-        resp = client.post(
-            "/invocations",
-            json={"prompt": "Hello"},
-            headers={"X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": "a" * 40},
-        )
-    assert resp.status_code == 200
-
-
-def test_invocations_rejects_missing_prompt():
-    app = _make_app()
+def test_invalid_payload_yields_error_event(app):
     client = TestClient(app, raise_server_exceptions=False)
-    resp = client.post(
-        "/invocations",
-        json={},
-        headers={"X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": "a" * 40},
-    )
-    # Should get an error event in the SSE stream
-    assert resp.status_code == 200  # SSE always returns 200
-    assert "error" in resp.text
+    resp = client.post("/invocations", json={}, headers=_SID)
+    assert resp.status_code == 200          # SSE always 200
+    assert "error" in resp.text             # degraded, did not crash
+
+
+def test_busy_session_is_rejected(app):
+    session = FakeSessionState()
+
+    async def _hold():
+        await session.invocation_lock.acquire()
+
+    with patch("strands_compose_agentcore.app.resolve_session", return_value=session):
+        client = TestClient(app, raise_server_exceptions=False)
+        # Prime the cache and hold the lock so the next request sees "busy".
+        client.portal.call(_hold)          # acquire the real lock off-loop
+        app.state.session = session
+        resp = client.post("/invocations", json={"prompt": "Hi"}, headers=_SID)
+        assert "error" in resp.text
 ```
+
+> For full-fidelity end-to-end tests, build the app from a tiny real YAML with
+> the model provider faked at strands-compose's `resolve_model` seam (see the
+> `library-development` skill). That runs real `load_session` + `build_manifest`,
+> so you never patch `build_manifest`.
 
 ---
 
-## 6. Client body assembly -- `tests/client/test_body.py`
+## 8. Client transport — `tests/client/`
 
-Test the public `build_invocation_body` function. Assert on shape, not
-internal calls.
+### Local (urllib) — fake the response
 
 ```python
 from __future__ import annotations
 
+from unittest.mock import patch
+
+from strands_compose_agentcore import LocalClient
+from tests.fakes.transport import FakeUrlopenResponse
+
+_EVENT = b'data: {"type": "token", "agent_name": "a", "data": {"text": "hi"}}'
+
+
+def test_local_client_yields_stream_events():
+    with patch("strands_compose_agentcore.client.local.urlopen",
+               return_value=FakeUrlopenResponse([_EVENT, b"", b": keepalive"])):
+        events = list(LocalClient().invoke("Hello"))
+    assert [e.type for e in events] == ["token"]   # noise filtered
+```
+
+### Async (httpx) — MockTransport
+
+```python
+from __future__ import annotations
+
+import httpx
 import pytest
 
-from strands_compose_agentcore.client.utils import build_invocation_body
+from strands_compose_agentcore import AsyncLocalClient
+from strands_compose_agentcore.types import ClientConnectionError
+from tests.fakes.transport import sse_transport
+
+_LINE = 'data: {"type": "token", "agent_name": "a", "data": {"text": "hi"}}'
 
 
-def test_string_produces_prompt_key():
-    assert build_invocation_body("Hi") == {"prompt": "Hi"}
+async def test_async_local_client_yields_events():
+    client = AsyncLocalClient()
+    client._http = httpx.AsyncClient(transport=sse_transport([_LINE]))
+    events = [e async for e in client.invoke("Hello")]
+    assert [e.type for e in events] == ["token"]
 
 
-def test_single_block_wraps_in_list():
-    block = {"text": "Hello"}
-    result = build_invocation_body(block)
-    assert result == {"prompt": [{"text": "Hello"}]}
+async def test_async_local_client_connect_error_is_translated():
+    def boom(request):
+        raise httpx.ConnectError("refused")
 
-
-def test_list_of_blocks_preserved():
-    blocks = [{"text": "a"}, {"text": "b"}]
-    result = build_invocation_body(blocks)
-    assert result == {"prompt": [{"text": "a"}, {"text": "b"}]}
-
-
-def test_empty_list_raises_value_error():
-    with pytest.raises(ValueError):
-        build_invocation_body([])
+    client = AsyncLocalClient()
+    client._http = httpx.AsyncClient(transport=httpx.MockTransport(boom))
+    with pytest.raises(ClientConnectionError):
+        [e async for e in client.invoke("Hello")]
 ```
 
----
-
-## 7. SSE parsing -- `tests/client/test_sse.py`
+### AgentCore (boto3) — botocore Stubber
 
 ```python
 from __future__ import annotations
 
-from strands_compose_agentcore.client.utils import parse_sse_line
+import io
+
+from strands_compose_agentcore import AgentCoreClient
+
+_ARN = "arn:aws:bedrock-agentcore:us-east-1:0:runtime/x"
+_SID = "a-session-id-long-enough-to-pass-validation-0001"
 
 
-def test_valid_data_line_returns_stream_event():
-    event = parse_sse_line('data: {"type": "token", "agent_name": "a", "data": {"text": "hi"}}')
-    assert event is not None
-    assert event.type == "token"
+async def test_agentcore_client_streams_events():
+    client = AgentCoreClient(_ARN, region="us-east-1")
+    body = b'data: {"type": "token", "agent_name": "a", "data": {"text": "hi"}}\n'
+    from botocore.stub import Stubber
 
-
-def test_blank_line_returns_none():
-    assert parse_sse_line("") is None
-
-
-def test_non_json_returns_none():
-    assert parse_sse_line("keepalive") is None
-    assert parse_sse_line(": comment") is None
+    with Stubber(client._client) as stub:
+        stub.add_response(
+            "invoke_agent_runtime",
+            {"response": io.BytesIO(body)},
+            # expected params are validated -> a wrong key would fail loudly
+            expected_params={
+                "agentRuntimeArn": _ARN,
+                "payload": b'{"prompt": "Hi"}',
+                "contentType": "application/json",
+                "accept": "text/event-stream",
+                "runtimeSessionId": _SID,
+            },
+        )
+        events = [e async for e in client.invoke("Hi", session_id=_SID)]
+    assert [e.type for e in events] == ["token"]
+    client.close()
 ```
 
 ---
 
-## 8. Error translation -- `tests/client/test_errors.py`
+## 9. Error translation — `tests/client/test_errors.py`
 
 ```python
 from __future__ import annotations
@@ -411,33 +489,59 @@ from strands_compose_agentcore.client.utils import translate_error
 from strands_compose_agentcore.types import (
     AccessDeniedError,
     AgentCoreClientError,
+    ConflictError,
+    InvalidRequestError,
     SessionNotFoundError,
     ThrottledError,
 )
 
 
-class FakeClientError(Exception):
-    def __init__(self, code: str, message: str = "msg"):
-        self.response = {"Error": {"Code": code, "Message": message}}
+class _FakeClientError(Exception):
+    def __init__(self, code: str) -> None:
+        self.response = {"Error": {"Code": code, "Message": "msg"}}
 
 
 @pytest.mark.parametrize(
-    "code,expected_type",
+    "code,expected",
     [
         ("AccessDeniedException", AccessDeniedError),
         ("ThrottlingException", ThrottledError),
         ("ResourceNotFoundException", SessionNotFoundError),
-        ("UnknownCode", AgentCoreClientError),
+        ("ValidationException", InvalidRequestError),
+        ("ConflictException", ConflictError),
+        ("SomethingElse", AgentCoreClientError),
     ],
 )
-def test_error_code_maps_to_typed_exception(code, expected_type):
-    exc = translate_error(FakeClientError(code))
-    assert isinstance(exc, expected_type)
+def test_error_code_maps_to_typed_exception(code, expected):
+    assert isinstance(translate_error(_FakeClientError(code)), expected)
 ```
 
 ---
 
-## 9. Media builder tests -- `tests/media/test_builders.py`
+## 10. SSE parsing — `tests/client/test_sse.py`
+
+```python
+from __future__ import annotations
+
+import pytest
+
+from strands_compose_agentcore.client.utils import parse_sse_line
+
+_VALID = 'data: {"type": "token", "agent_name": "a", "data": {"text": "hi"}}'
+
+
+def test_valid_data_line_parses_to_event():
+    assert parse_sse_line(_VALID).type == "token"
+
+
+@pytest.mark.parametrize("noise", ["", ": comment", "keepalive", "data: not-json"])
+def test_noise_lines_return_none(noise):
+    assert parse_sse_line(noise) is None
+```
+
+---
+
+## 11. Media builders — `tests/media/test_builders.py`
 
 ```python
 from __future__ import annotations
@@ -447,12 +551,11 @@ from pathlib import Path
 
 import pytest
 
-from strands_compose_agentcore.media import document, image, reply, text
+from strands_compose_agentcore import document, image, reply, text
 
 
-def test_text_returns_text_block():
-    result = text("hello")
-    assert result == {"text": "hello"}
+def test_text_block_shape():
+    assert text("hi") == {"text": "hi"}
 
 
 def test_image_from_bytes_requires_format():
@@ -460,36 +563,30 @@ def test_image_from_bytes_requires_format():
         image(b"\x89PNG", format=None)
 
 
-def test_image_from_bytes_with_format():
-    result = image(b"\x89PNG\r\n\x1a\n", format="png")
-    assert "image" in result
-    assert result["image"]["format"] == "png"
-    decoded = base64.b64decode(result["image"]["source"]["base64"])
-    assert decoded == b"\x89PNG\r\n\x1a\n"
-
-
 def test_image_from_path_infers_format(tmp_path: Path):
-    img_file = tmp_path / "photo.jpeg"
-    img_file.write_bytes(b"\xff\xd8\xff\xe0")
-    result = image(img_file)
-    assert result["image"]["format"] == "jpeg"
+    f = tmp_path / "photo.jpeg"
+    f.write_bytes(b"\xff\xd8\xff\xe0")
+    assert image(f)["image"]["format"] == "jpeg"
 
 
-def test_document_from_path_generates_name(tmp_path: Path):
-    doc_file = tmp_path / "report.pdf"
-    doc_file.write_bytes(b"%PDF-1.4")
-    result = document(doc_file)
-    assert result["document"]["name"].startswith("report-")
+def test_missing_path_raises_file_not_found(tmp_path: Path):
+    with pytest.raises(FileNotFoundError):
+        image(tmp_path / "nope.png")
 
 
-def test_reply_shape():
-    result = reply("int-1", {"answer": "yes"})
-    assert result == {"reply": {"interrupt_id": "int-1", "response": {"answer": "yes"}}}
+def test_document_defaults_name_with_suffix(tmp_path: Path):
+    f = tmp_path / "report.pdf"
+    f.write_bytes(b"%PDF-1.4")
+    assert document(f)["document"]["name"].startswith("report-")
+
+
+def test_reply_block_shape():
+    assert reply("int-1", "yes") == {"reply": {"interrupt_id": "int-1", "response": "yes"}}
 ```
 
 ---
 
-## 10. Property tests -- `tests/media/test_formats.py`
+## 12. Format registry (example-based, not property) — `tests/media/test_formats.py`
 
 ```python
 from __future__ import annotations
@@ -498,53 +595,40 @@ from strands_compose_agentcore.media_formats import MEDIA_FORMATS
 from strands_compose_agentcore.types import DOCUMENT_FORMATS, IMAGE_FORMATS
 
 
-def test_every_format_has_valid_structure():
-    for spec in MEDIA_FORMATS:
-        assert spec.format, "format token must not be empty"
-        assert spec.category in ("image", "document")
-        assert spec.extensions, "must have at least one extension"
-        assert all(ext.startswith(".") for ext in spec.extensions)
-        assert spec.mime_type, "mime_type must not be empty"
-
-
 def test_image_and_document_sets_are_disjoint():
     assert IMAGE_FORMATS & DOCUMENT_FORMATS == frozenset()
 
 
-def test_format_sets_cover_all_entries():
-    all_formats = {s.format for s in MEDIA_FORMATS}
-    assert IMAGE_FORMATS | DOCUMENT_FORMATS == all_formats
+def test_sets_cover_every_registered_format():
+    assert IMAGE_FORMATS | DOCUMENT_FORMATS == {s.format for s in MEDIA_FORMATS}
 ```
 
 ---
 
-## 11. Session ID validation -- `tests/utils/test_validation.py`
+## 13. Property tests (optional; needs `hypothesis` in dev deps) — `tests/property/`
+
+Only genuine runtime invariants. Not the format table, not base64.
 
 ```python
 from __future__ import annotations
 
 import pytest
 
-from strands_compose_agentcore._utils import validate_session_id
+pytest.importorskip("hypothesis")
+from hypothesis import given, strategies as st  # noqa: E402
+
+from strands_compose_agentcore._utils import validate_session_id  # noqa: E402
 
 
-def test_none_is_accepted():
-    validate_session_id(None)  # should not raise
+@given(st.text(min_size=33, max_size=256))
+def test_in_range_session_ids_accepted(sid):
+    validate_session_id(sid)  # must not raise
 
 
-def test_valid_length_accepted():
-    validate_session_id("x" * 33)
-    validate_session_id("y" * 256)
-
-
-def test_too_short_raises():
-    with pytest.raises(ValueError, match="too short"):
-        validate_session_id("x" * 32)
-
-
-def test_too_long_raises():
-    with pytest.raises(ValueError, match="too long"):
-        validate_session_id("x" * 257)
+@given(st.text(max_size=32))
+def test_short_session_ids_rejected(sid):
+    with pytest.raises(ValueError):
+        validate_session_id(sid)
 ```
 
 ---
@@ -552,17 +636,19 @@ def test_too_long_raises():
 ## Quick decision guide
 
 | I'm testing... | Folder | Fake at? | Assert on |
-|---------------|--------|----------|-----------|
-| payload shape/rejection | `server/` | nothing | decoded value type + structure, or error type |
-| session resolution wiring | `server/` | `load_session` | `SessionState` fields, queue open/closed |
-| entry agent run + error handling | `server/` | `entry.invoke_async` | events on queue, queue closed |
-| app invocation end-to-end | `server/` | `resolve_session` | SSE response contains expected events |
-| client body assembly | `client/` | nothing | `{"prompt": ...}` shape |
+|---|---|---|---|
+| payload shape / rejection | `server/` | nothing | decoded value type+structure, or exception type |
+| client↔server drift | `contract/` | nothing | round-trip parsed shape |
+| body assembly | `client/` | nothing | `{"prompt": ...}` shape / `ValueError` |
 | SSE line parsing | `client/` | nothing | `StreamEvent` or `None` |
 | error code translation | `client/` | nothing | exception type |
-| client invoke streaming | `client/` | HTTP transport | yielded `StreamEvent` |
-| media builders | `media/` | nothing (use `tmp_path`) | dict shape + format + decoded bytes |
-| format registry | `media/` | nothing | invariants (disjoint, complete, valid) |
-| session ID validation | `utils/` | nothing | accepted or `ValueError` |
-| CLI dispatch | `cli/` | command internals | `CLIError` raised or correct dispatch |
-| wire contract shape | `contract/` | nothing | key names (snapshot) |
+| entry-agent run + faults | `server/` | `FakeEntry` (gate/raise) | error event present, queue closed |
+| app streaming / caching / locking | `server/` (integration) | `resolve_session` | lifecycle order, error-event on failure |
+| LocalClient invoke | `client/` | fake `urlopen` response | yielded events, noise filtered |
+| AsyncLocalClient invoke / connect error | `client/` | `httpx.MockTransport` | yielded events / `ClientConnectionError` |
+| AgentCoreClient invoke / stop / throttle | `client/` | `botocore.Stubber` | yielded events, typed error, validated request |
+| media builders | `media/` | nothing (`tmp_path`) | dict shape, format, decoded bytes |
+| format registry | `media/` | nothing | disjoint + covers table |
+| session id validation | `property/` or util | nothing | accepted / `ValueError` |
+| CLI dispatch | `cli/` | command internals | `CLIError` / correct dispatch |
+| wire shape guard | `contract/` | nothing | body keys + error-event shape (one snapshot) |
