@@ -115,3 +115,7 @@ convention = "google"
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["D100", "D101", "D102", "D103", "ANN", "S101"]
 "examples/**/*.py" = ["D100", "D103", "D104", "ANN", "INP001", "T201"]
+
+[tool.pyright]
+reportInvalidTypeForm = "none"
+extraPaths = ["src", "."]
