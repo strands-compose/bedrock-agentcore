@@ -91,7 +91,7 @@ from strands_compose_agentcore import LocalClient, document, image, text
 agent_input = [
     image("cat.png"),
     document("report.pdf"),
-    text("Describe the image and summarise the document.")
+    text("Describe the image and summarise the document."),
 ]
 for event in LocalClient().invoke(agent_input):
     print(event.type, event.data)

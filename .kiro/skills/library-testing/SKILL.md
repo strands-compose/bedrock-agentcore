@@ -36,11 +36,11 @@ facts drive the whole doctrine:
    (`parse_sse_line`). Drift here is the single most likely real bug.
 
 We do **not** own agent resolution, event-queue mechanics, model providers, or
-MCP lifecycle — strands-compose owns those. We test **our adapter layer**: that
-payloads parse and reject per contract, that the stream carries the right
-lifecycle, that sessions resolve/cache/lock correctly, that failures degrade to
-a clean error event, that clients assemble/parse/translate correctly, and that
-the two ends of the wire never drift.
+MCP client construction — strands-compose and strands own those. We test **our
+adapter layer**: that payloads parse and reject per contract, that the stream
+carries the right lifecycle, that sessions resolve/cache/close/lock correctly,
+that failures degrade to a clean error event, that clients assemble/parse/
+translate correctly, and that the two ends of the wire never drift.
 
 Read `references/test-patterns.md` for concrete, copy-paste templates. **This
 file is the law; that file is the toolbox** — load the toolbox only when
@@ -57,7 +57,7 @@ actually writing a test.
    (`_decode_block`, `_invoke_sync`, `_producer`), private attributes, mock call
    counts/order, log lines, or human-readable messages.
 2. **Fake at our own seam; never mock what we don't own.** strands-compose
-   (`load_session`, `resolve_infra`, `EventQueue`, `StreamEvent`,
+   (`load`, `load_config`, `EventQueue`, `StreamEvent`,
    `build_manifest`), boto3/botocore, httpx, urllib, and Starlette internals are
    off-limits as mock targets in their own right. Substitute a fake at **our**
    boundary, or use the vendor's own test seam (`botocore.Stubber`,
@@ -129,6 +129,10 @@ app (`create_app`) via Starlette `TestClient` / httpx `ASGITransport`, and drive
   `SessionState`; a new `session_id` triggers re-resolution; a second request
   while the lock is held is rejected. Test by holding the real lock, not by
   inspecting internals.
+- **Session teardown.** `close_session` calls `cleanup()` on every agent and on
+  delegate orchestrations (which are Agents), skips non-Agent orchestrations, and
+  keeps going when one agent's cleanup raises. It runs on session replacement
+  only — there is no lifespan teardown to test.
 
 ### 3. Client transport behaviour
 Fake at the transport seam (`botocore.Stubber`, `httpx.MockTransport`, a fake
@@ -263,19 +267,20 @@ boundary and drive our wiring:
 | Seam (patch where used) | Fake with | Proves |
 |---|---|---|
 | `strands_compose_agentcore.app.resolve_session` | `FakeSessionState` | app streaming, caching, locking, fault handling |
-| `strands_compose_agentcore.session.load_session` | returns `FakeResolvedConfig` | `resolve_session` wiring |
+| `strands_compose_agentcore.session.load` | returns `FakeResolvedConfig` | `resolve_session` wiring |
 | `resolved.entry.invoke_async` | `FakeEntry` (result / raise / gate / never-complete) | `run_entry_agent` success, error, timeout, cancel |
-| `EventQueue` | **use the real one** via `wire_event_queue()` | event drain + close, cheaply and deterministically |
+| a resolved agent for teardown | `Mock(spec=Agent)` | `close_session` calls `cleanup()`; `spec=` is required because `close_session` narrows with `isinstance` |
+| `EventQueue` | **use the real one** (`make_event_queue()` or `EventQueue(asyncio.Queue())`) | event drain + close, cheaply and deterministically |
 
 **Pipeline integration (a few tests, higher fidelity).** For end-to-end
 `/invocations` behaviour, prefer building a real app from a tiny real YAML with
 only the **model provider** faked at strands-compose's resolver seam
 (`resolve_model` → a fake model that emits scripted events — confirm the current
 seam name via the `library-development` skill / project map). This runs real
-`load_session`, real `EventQueue`, and real `build_manifest`, so you never patch
-`build_manifest` and you catch upstream drift. Patching `build_manifest` at our
-app seam is a fallback for pure adapter-seam tests only, and is a smell if it
-becomes the default.
+`load`, real `EventQueue`, and real `build_manifest`, so you never patch
+`build_manifest` and you catch upstream drift. Patching `build_manifest` at the
+`session` seam is a fallback for pure adapter-seam tests only (it needs real
+resolved agents), and is a smell if it becomes the default.
 
 ### Rules
 
@@ -283,9 +288,11 @@ becomes the default.
   `StreamEvent.__init__`, `load_config`, `build_manifest`). Fake at our
   resolution/invocation seam, or use a real object.
 - **Prefer fakes over `Mock`.** A `FakeEntry` with a real `invoke_async`
-  coroutine beats `MagicMock(spec=Agent)`; it survives dependency upgrades and
-  reads clearly. Reserve `unittest.mock` for forcing hard-to-produce conditions,
-  always with `spec_set=`.
+  coroutine beats a mock; it survives dependency upgrades and reads clearly.
+  Reserve `unittest.mock` for forcing hard-to-produce conditions and for the one
+  case a hand fake cannot serve: code that narrows with `isinstance`, where
+  `Mock(spec=Agent)` is the only double that passes the check without
+  constructing a real model.
 - **Use the vendor's own test seam for transport.** `botocore.Stubber` for the
   `AgentCoreClient` boto3 calls (it validates the request shape against the real
   API, so a wrong parameter fails loudly — a patched `MagicMock` would not);
@@ -295,7 +302,7 @@ becomes the default.
 - **Never mock our own code under test.** Real `parse_payload`, real
   `build_invocation_body`, real `translate_error`, real `validate_session_id`.
 - **Patch where used, not where defined.** Patch
-  `strands_compose_agentcore.session.load_session`, not the upstream module.
+  `strands_compose_agentcore.session.load`, not the upstream module.
 
 ---
 
@@ -343,7 +350,7 @@ implementation.
 
 ## Coverage and Mutation — Signal, Not Theatre
 
-- **Coverage is a floor and a gap-finder, never a goal.** The gate is **≥ 75 %**
+- **Coverage is a floor and a gap-finder, never a goal.** The gate is **≥ 80 %**
   branch coverage — a safety net sized for glue code, not a target to chase. A
   high number with weak assertions is false confidence; tests that execute lines
   without asserting are forbidden. Do not add a test purely to move the number,
@@ -400,9 +407,10 @@ implementation.
 
 - Call private helpers (`_decode_block`, `_invoke_sync`, `_producer`) or read
   private state to make an assertion; drive the public seam.
-- Fabricate strands-compose events or agents with `MagicMock` / `SimpleNamespace`,
-  or patch `EventQueue.__init__` — use a real `StreamEvent`/`EventQueue` or a
-  pre-loaded fake.
+- Fabricate strands-compose events with `MagicMock` / `SimpleNamespace`, or patch
+  `EventQueue.__init__` — use a real `StreamEvent`/`EventQueue` or a pre-loaded
+  fake. (`Mock(spec=Agent)` is the sanctioned exception, for `isinstance`-narrowed
+  code only.)
 - Mock strands-compose, boto3 client methods, httpx, or Starlette internals
   directly — fake at our seam or use `botocore.Stubber` / `httpx.MockTransport`.
 - Mock our own code under test (`parse_payload`, `build_invocation_body`).
@@ -418,5 +426,5 @@ implementation.
 - Use `sleep`, real clocks, real network, or real model calls to control timing —
   gate on an `asyncio.Event` instead.
 - Patch `build_manifest` as the default path — prefer a real tiny config with a
-  faked model seam.
+  faked model seam, or a pre-built `SessionManifest` on the fake session state.
 - Leave a flaky test "for later" — quarantine and fix, or delete.

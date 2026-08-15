@@ -11,15 +11,20 @@ from __future__ import annotations
 
 import io
 import json
-from unittest.mock import patch
 
 import pytest
+from botocore.exceptions import IncompleteReadError
 from botocore.response import StreamingBody
 from botocore.stub import Stubber
 from strands_compose import StreamEvent
 
 from strands_compose_agentcore.client.agentcore import AgentCoreClient, StopSessionResult
-from strands_compose_agentcore.types import AccessDeniedError, RetryConfig, ThrottledError
+from strands_compose_agentcore.types import (
+    AccessDeniedError,
+    RetryableConflictError,
+    RetryConfig,
+    ThrottledError,
+)
 
 _ARN = "arn:aws:bedrock-agentcore:us-east-1:0:runtime/test"
 _SID = "s" * 33
@@ -34,6 +39,17 @@ def _streaming_body(*sse_lines: str) -> StreamingBody:
     """Wrap SSE lines in a real StreamingBody, as boto3 would return."""
     raw = "".join(f"{line}\n" for line in sse_lines).encode("utf-8")
     return StreamingBody(io.BytesIO(raw), len(raw))
+
+
+def _truncated_body(*sse_lines: str) -> StreamingBody:
+    """A StreamingBody that dies mid-response, as a dropped connection does.
+
+    Declaring more bytes than the buffer holds makes botocore raise
+    ``IncompleteReadError`` from ``iter_lines()`` -- its real behaviour for a
+    truncated response, so no hand-rolled transport double is needed.
+    """
+    raw = "".join(f"{line}\n" for line in sse_lines).encode("utf-8")
+    return StreamingBody(io.BytesIO(raw), len(raw) + 50)
 
 
 class TestAgentCoreClientInvoke:
@@ -63,6 +79,23 @@ class TestAgentCoreClientInvoke:
         assert isinstance(events[0], StreamEvent)
         client.close()
 
+    async def test_invoke_raw_output_yields_lines_and_filters_noise(self) -> None:
+        client = _client()
+        event = {"type": "token", "agent_name": "a", "data": {"text": "hi"}}
+        line = f"data: {json.dumps(event)}"
+        with Stubber(client._client) as stub:
+            stub.add_response(
+                "invoke_agent_runtime",
+                {
+                    "response": _streaming_body(line, "", ": keepalive"),
+                    "contentType": "text/event-stream",
+                },
+            )
+            lines = [x async for x in client.invoke("Hello", session_id=_SID, raw_output=True)]
+
+        assert lines == [line, ": keepalive"]  # blanks dropped, comments passed through
+        client.close()
+
     async def test_invoke_translates_access_denied_error(self) -> None:
         client = _client()
         with Stubber(client._client) as stub:
@@ -73,17 +106,40 @@ class TestAgentCoreClientInvoke:
                 _ = [e async for e in client.invoke("Hello", session_id=_SID)]
         client.close()
 
-    async def test_invoke_retries_throttling_then_raises_throttled_error(self) -> None:
-        client = _client(retry=RetryConfig(max_retries=2, base_delay=0.01, jitter=False))
+    @pytest.mark.parametrize(
+        ("error_code", "expected"),
+        [
+            ("ThrottlingException", ThrottledError),
+            ("RetryableConflictException", RetryableConflictError),
+        ],
+    )
+    async def test_invoke_retries_then_raises_the_typed_error(
+        self, error_code: str, expected: type[Exception]
+    ) -> None:
+        # base_delay=0 keeps the retry deterministic without patching sleep.
+        client = _client(retry=RetryConfig(max_retries=2, base_delay=0, jitter=False))
         with Stubber(client._client) as stub:
-            for _ in range(3):  # initial attempt + 2 retries all throttled
-                stub.add_client_error(
-                    "invoke_agent_runtime", service_error_code="ThrottlingException"
-                )
-            with patch("strands_compose_agentcore.client.agentcore.asyncio.sleep") as mock_sleep:
-                mock_sleep.return_value = None
-                with pytest.raises(ThrottledError):
-                    _ = [e async for e in client.invoke("Hello", session_id=_SID)]
+            for _ in range(3):  # initial attempt + 2 retries all fail
+                stub.add_client_error("invoke_agent_runtime", service_error_code=error_code)
+            with pytest.raises(expected):
+                _ = [e async for e in client.invoke("Hello", session_id=_SID)]
+        client.close()
+
+    async def test_invoke_raises_when_the_stream_dies_mid_response(self) -> None:
+        # The producer emits its end-of-stream sentinel on failure too, so a
+        # truncated response must not look like a clean end of stream.
+        client = _client()
+        good = {"type": "token", "agent_name": "a", "data": {"text": "hi"}}
+        with Stubber(client._client) as stub:
+            stub.add_response(
+                "invoke_agent_runtime",
+                {
+                    "response": _truncated_body(f"data: {json.dumps(good)}"),
+                    "contentType": "text/event-stream",
+                },
+            )
+            with pytest.raises(IncompleteReadError):
+                _ = [e async for e in client.invoke("Hello", session_id=_SID)]
         client.close()
 
 

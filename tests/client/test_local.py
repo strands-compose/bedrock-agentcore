@@ -41,7 +41,7 @@ class TestLocalClientInvoke:
             {"type": "text", "agent_name": "agent", "data": {"text": "hello"}},
             {"type": "text", "agent_name": "agent", "data": {"text": " world"}},
         ]
-        lines = [f"data: {json.dumps(e)}\n".encode("utf-8") for e in events_data]
+        lines = [f"data: {json.dumps(e)}\n".encode() for e in events_data]
         fake_response = FakeUrlResponse(lines)
 
         with patch("strands_compose_agentcore.client.local.urlopen", return_value=fake_response):
@@ -55,7 +55,7 @@ class TestLocalClientInvoke:
         event_dict = {"type": "text", "agent_name": "agent", "data": {"text": "hi"}}
         lines = [
             b"\n",
-            f"data: {json.dumps(event_dict)}\n".encode("utf-8"),
+            f"data: {json.dumps(event_dict)}\n".encode(),
             b"\n",
         ]
         fake_response = FakeUrlResponse(lines)

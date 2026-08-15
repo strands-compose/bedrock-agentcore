@@ -13,7 +13,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from strands_compose_agentcore import LocalClient, ContentBlock, image, text, document
+from strands_compose_agentcore import ContentBlock, LocalClient, document, image, text
 
 
 def main() -> int:

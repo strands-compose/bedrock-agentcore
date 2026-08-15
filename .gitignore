@@ -2,6 +2,7 @@
 .env
 .claude
 .kiro/specs
+.kiro/settings
 .sessions
 
 # Ignore Python cache and compiled files

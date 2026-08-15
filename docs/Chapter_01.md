@@ -42,8 +42,7 @@ We are the glue between strands-compose and AgentCore Runtime. Nothing more.
 │  Your YAML Config (config.yaml)          │  ← You write this
 ├──────────────────────────────────────────┤
 │  strands-compose                         │  ← Parses YAML, resolves agents
-│  (load_config, resolve_infra,            │
-│   load_session, EventQueue)              │
+│  (load_config, load, EventQueue)         │
 ├──────────────────────────────────────────┤
 │  strands-compose-agentcore  ← THIS PKG   │  ← Wraps as AgentCore app,
 │  (create_app,                            │     dev server, client
@@ -74,31 +73,34 @@ Installing `strands-compose-agentcore` pulls in `strands-compose` and `bedrock-a
 
 ## Architecture at a Glance
 
-Two-phase resolution — infrastructure is resolved once at boot, agents are created lazily per session:
+Config is parsed at boot; everything live is built on the first request:
 
-1. **Infrastructure phase** (once at boot) — resolve models, MCP servers/clients, session managers
-2. **Session phase** (once per session ID) — create agents, wire event queues, set entry point
+1. **Config phase** (once at boot) — parse and validate the YAML into an `AppConfig`
+2. **Session phase** (once per session ID) — build models, MCP clients, agents, orchestrations, wire event queues, set entry point
 
-This separation exists because:
-- Models and MCP connections are expensive — share them across all sessions
-- Agents need a session ID for conversation history — create them when the first request arrives
-- [AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/) allocates one microVM per session — the session ID comes with the first request
+Why the split:
+- A malformed config should fail before the server starts, not on a user's prompt
+- Agents need a session ID for conversation history, and it only arrives with the first request
+- [AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/) allocates one microVM per session, so a session's objects live exactly as long as the pod
 
 ```
                     Boot                          First /invocations
                      │                                   │
                      ▼                                   ▼
             ┌─────────────────┐              ┌────────────────────┐
-            │  load_config()  │              │  load_session()    │
-            │  resolve_infra()│              │  wire_event_queue()│
+            │  load_config()  │              │  load(cfg, sid=…)  │
+            │                 │              │  make_event_queue()│
             └────────┬────────┘              └─────────┬──────────┘
                      │                                 │
-              Infrastructure                    Session State
-              (shared, long-lived)             (per session ID)
-              • models                         • agents
-              • MCP servers/clients            • orchestrations
-              • session managers               • entry point
-                                               • event queue
+                 AppConfig                      Session State
+              (pure data, no                (built on 1st request)
+               live objects)                 • models
+                                            • MCP clients
+                                            • agents
+                                            • orchestrations
+                                            • session managers
+                                            • entry point
+                                            • event queue
 ```
 
 ## Minimal Example

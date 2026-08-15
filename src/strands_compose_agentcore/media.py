@@ -106,7 +106,7 @@ def document(
     if name is not None:
         resolved_name: str | None = name
     elif default_name:
-        resolved_name = "%s-%s" % (default_name, uuid.uuid4().hex[:8])
+        resolved_name = f"{default_name}-{uuid.uuid4().hex[:8]}"
     else:
         resolved_name = None
     if not resolved_name:
@@ -151,9 +151,9 @@ def _resolve_format(
     """Resolve and validate a media format."""
     resolved = supplied if supplied is not None else extension_map.get(extension or "")
     if resolved is None:
-        raise ValueError("could not infer %s format; pass format= explicitly" % kind)
+        raise ValueError(f"could not infer {kind} format; pass format= explicitly")
     if resolved not in allowed:
-        raise ValueError("format %r is not a supported %s format" % (resolved, kind))
+        raise ValueError(f"format {resolved!r} is not a supported {kind} format")
     return resolved
 
 

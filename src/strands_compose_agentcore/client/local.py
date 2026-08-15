@@ -32,7 +32,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-from typing import TYPE_CHECKING, Literal, overload
+from typing import TYPE_CHECKING, Literal, Self, overload
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
@@ -69,6 +69,7 @@ class LocalClient:
         url: str = _DEFAULT_URL,
         *,
         session_id: str | None = None,
+        timeout: float | None = None,
     ) -> None:
         """Sync HTTP client for a local strands-compose-agentcore server.
 
@@ -85,6 +86,10 @@ class LocalClient:
             session_id: Session ID for the AgentCore header.  When
                 ``None`` (the default), uses
                 ``DEFAULT_SESSION_ID``.
+            timeout: Socket timeout in seconds applied to each read.  It
+                bounds silence between SSE lines, not total run time, so
+                set it above the longest expected gap.  ``None`` (the
+                default) waits indefinitely.
 
         Attributes:
             url: Full URL of the ``/invocations`` endpoint.
@@ -99,6 +104,7 @@ class LocalClient:
         """
         self.url = url
         self.session_id = session_id or DEFAULT_SESSION_ID
+        self._timeout = timeout
 
     @overload
     def invoke(
@@ -189,7 +195,7 @@ class LocalClient:
         )
 
         try:
-            with urlopen(req) as resp:  # noqa: S310  # nosec B310 — local server
+            with urlopen(req, timeout=self._timeout) as resp:  # nosec B310 — local server
                 for raw_line in resp:
                     text = raw_line.decode("utf-8").strip()
                     if raw_output:
@@ -202,7 +208,7 @@ class LocalClient:
         except URLError as exc:
             raise ClientConnectionError(f"Could not connect to {self.url}: {exc.reason}") from exc
 
-    def __enter__(self) -> LocalClient:
+    def __enter__(self) -> Self:
         """Enter the sync context manager.
 
         Returns:
@@ -413,7 +419,7 @@ class AsyncLocalClient:
         """Close the underlying ``httpx.AsyncClient``."""
         await self._http.aclose()
 
-    async def __aenter__(self) -> AsyncLocalClient:
+    async def __aenter__(self) -> Self:
         """Enter the async context manager.
 
         Returns:

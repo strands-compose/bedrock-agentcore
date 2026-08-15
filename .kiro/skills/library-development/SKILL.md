@@ -21,8 +21,7 @@ to strands-compose. This package translates AgentCore Runtime conventions
 gets out of the way. It is a thin adapter, not a framework.
 
 Before building anything that touches agent wiring, event streaming, or config
-parsing, check the installed SDK
-(`.venv/lib/python*/site-packages/strands_compose/`) and use what it provides.
+parsing, read the installed `strands_compose` source and use what it provides.
 Then read a sibling that plays the same role and copy its shape — matching the
 established pattern matters more than any single rule below.
 
@@ -38,9 +37,10 @@ established pattern matters more than any single rule below.
    strands-compose types (`StreamEvent`, `ResolvedConfig`, `EventQueue`); do not
    wrap, shim, or re-version them. This coupling is intentional (see *Coupling
    with strands-compose*).
-3. **Two-phase resolution is the architecture.** Infrastructure once at boot
-   (`resolve_infra`), session lazily on first invocation (`load_session`). Never
-   blur this boundary.
+3. **Config at boot, session on first invocation.** `load_config` validates once
+   in the factory; `load(app_config, session_id=…)` builds everything live on
+   the first request. Never blur this boundary, and never resolve live objects
+   in the factory or the lifespan.
 4. **Single-flight by design.** One invocation at a time per pod. Concurrent
    single-tenant invocations are rejected on purpose; multi-tenant concurrency
    is out of scope (see *The Single-Flight Model*).
@@ -59,32 +59,41 @@ established pattern matters more than any single rule below.
 
 ---
 
-## The Two-Phase Lifecycle — the central mental model
+## The Config/Session Lifecycle — the central mental model
 
-Everything the adapter does revolves around a temporal split between
-process-lifetime infrastructure and per-session state.
+Everything the adapter does revolves around one split: the config is data
+validated at boot; everything live belongs to a session.
 
 ```
 create_app(config)
-  ├─ prepare_app_state -> AppConfig (load_config) + ResolvedInfra (resolve_infra)
-  │                        infra = models + MCP, shared and cold, NO session context
+  ├─ load_config -> AppConfig                       pure data, no live objects
   └─ BedrockAgentCoreApp(lifespan=...)
-       ├─ lifespan startup: start MCP lifecycle, probe connectivity,
-       │                     stash (app_config, infra, session=None) on app.state
+       ├─ lifespan: stash (app_config, session=None) on app.state; no teardown
        └─ @app.entrypoint  /invocations POST  (per request)
              parse_payload -> validate_session_id -> resolve_session (cached)
              -> flush + emit session_start -> run_entry_agent -> close(session_end)
 ```
 
+`resolve_session` is the whole of session construction: `load(app_config,
+session_id=…)` builds models, MCP clients, agents, and orchestrations;
+`build_manifest` describes the resulting topology once; `make_event_queue`
+attaches the `EventPublisher` hooks. The manifest is stored on `SessionState` and
+re-emitted with SESSION_START on every turn, so it is built exactly once per
+session.
+
 Two hard boundaries:
 
-- **Infra vs session.** `resolve_infra` builds process-lifetime things (models,
-  MCP servers/clients, lifecycle) with no session context. `resolve_session`
-  builds per-session things (agents, orchestrations, entry, `EventQueue`) using
-  the session ID from the AgentCore header. One infra serves the pod's lifetime;
-  the session is resolved lazily, cached, and replaced only when a new session
-  ID arrives. **Never store agents or session managers on `ResolvedInfra`;
-  never resolve infrastructure per request.**
+- **Config vs session.** The factory validates the YAML once so a malformed
+  config fails before the server starts; the `AppConfig` it produces is pure
+  data and is kept on `app.state` so no YAML is re-read per session.
+  `resolve_session` runs on the first request, once the session ID from the
+  AgentCore header is known, and is then cached and replaced only when a new
+  session ID arrives. A replaced session is closed first
+  (`close_session` → `Agent.cleanup()`): a delegated agent sits in an
+  agent-as-tool reference cycle, so refcounting cannot reap it and its MCP
+  `command:` subprocess would outlive the session until an arbitrary later
+  cyclic-GC pass. **Never build live objects in the factory or the lifespan, and
+  never replace a cached session without closing it.**
 - **Server vs client.** The server side runs inside the AgentCore pod; the
   client side runs outside (user scripts, CLIs, other services). They share only
   the wire contract (`{"prompt": ...}` + SSE `StreamEvent` dicts) and the public
@@ -120,7 +129,7 @@ This is an explicit design decision, not an omission:
 ## Coupling with strands-compose — intentional, lockstep, single source of truth
 
 This package and strands-compose are maintained in parallel and released in
-lockstep (`strands-compose >=0.9.0,<1.0.0`). Treat that coupling as a feature:
+lockstep (`strands-compose >=0.10.0,<1.0.0`). Treat that coupling as a feature:
 
 - **Trust strands-compose types and re-export them unchanged.** The clients
   yield `StreamEvent`; the server passes `ResolvedConfig`/`EventQueue` around.
@@ -129,13 +138,14 @@ lockstep (`strands-compose >=0.9.0,<1.0.0`). Treat that coupling as a feature:
   One source of truth beats a defensive shim.
 - **We accept the maintenance contract.** A breaking change to a strands-compose
   contract is fixed here immediately, in the same release train. Do not add
-  compatibility shims, feature detection, or version branches to soften upstream
-  changes — that would fork the source of truth.
-- **The only sanctioned deep imports** are the two runtime helpers that
-  strands-compose does not surface at top level (`startup.validate_mcp`,
-  `manifest.build_manifest`). Confine them behind a single internal boundary so
-  there is exactly one place to update if they move. Everything else comes from
-  the `strands_compose` top level.
+  compatibility shims, feature detection, version branches, or duck-typed
+  fallbacks to soften upstream changes — that would fork the source of truth.
+- **Two sanctioned deep imports**, both confined to `session.py`:
+  `strands_compose.manifest.build_manifest` and
+  `strands_compose.types.SessionManifest`. They are the only session-topology
+  pieces strands-compose does not surface at top level; keeping them in one
+  module means one place to update if they move. Everything else comes from the
+  `strands_compose` top level.
 
 ---
 
@@ -165,6 +175,14 @@ The adapter's core is a streaming pipeline; treat its concurrency with care.
   justified only when a client fans out many concurrent streams — keep it bounded
   and shut it down on close. Don't hand-roll thread/queue plumbing the stdlib
   provides.
+- **Server-side blocking is already isolated — don't "fix" it.** The entrypoint
+  runs on a worker loop in a background thread, and `/ping` is a sync Starlette
+  handler served from a threadpool, so a blocking call in `resolve_session`
+  (`MCPClient.start()` waits up to its 30 s `startup_timeout`) does not starve
+  health checks — measured: 12/12 pings answered, 4.3 ms worst, during a 3 s
+  block. Keep `resolve_session` / `close_session` sync. Wrapping them in
+  `to_thread` buys nothing (the request awaits the same wall clock) and inserts
+  an `await` into the busy-check → lock-acquire window, breaking single-flight.
 - **Respect backpressure; never buffer unboundedly.** The event stream can be
   long-lived. Drain the queue as events arrive and yield straight through; do not
   accumulate events in an unbounded list. Queue mechanics belong to
@@ -281,6 +299,11 @@ logger.warning("session_id=<%s>, busy_session_id=<%s> | invocation rejected", si
   (`Args:` / `Returns:` / `Raises:`). Class docstrings on `__init__` except
   `@dataclass` (use the class body).
 - **Early returns; nesting ≤ 3 levels.**
+- **`isinstance` against the real type, never duck typing.** No
+  `getattr(x, "method", None)` / `hasattr` probing to tolerate a shape that might
+  not be there — the dependency versions are pinned, so the type is known.
+- **No defensive checks a validated type already guarantees.** If pydantic
+  requires a field, don't re-check it.
 - **Raise specific exceptions with context.** Never swallow silently; no bare
   `except:`. The only sanctioned broad catch is best-effort cleanup (cancelling
   tasks, closing streams): catch `Exception`, log it, continue — and re-raise
@@ -309,8 +332,8 @@ logger.warning("session_id=<%s>, busy_session_id=<%s> | invocation rejected", si
 1. **Which side?** Server, client, shared types/media, or CLI. Unsure →
    `references/project-map.md`.
 2. **Read a sibling first** and mirror its shape, docstrings, and error style.
-3. **Check strands-compose first** — import from the top level; confine the two
-   sanctioned deep imports behind the existing internal boundary.
+3. **Check strands-compose first** — import from the top level; keep the two
+   sanctioned deep imports inside `session.py`.
 4. **New media format?** One `MediaFormatSpec` entry in the registry.
 5. **New exception?** Subclass `AgentCoreClientError`, add to the error map,
    export from both public surfaces.
@@ -340,17 +363,24 @@ verify — rely on `check` and `test`.
 ## Things NOT to Do
 
 - Don't re-implement what strands-compose or strands provides.
-- Don't blur the infra/session boundary — no agents on `ResolvedInfra`, no
-  per-request infrastructure resolution.
+- Don't blur the config/session boundary — no live objects built in the factory
+  or lifespan, and no re-parsing YAML per request.
+- Don't replace a cached session without `close_session` — a delegated agent's
+  MCP subprocess would linger until an arbitrary cyclic-GC pass. (Process exit
+  needs no teardown; the subprocess dies with the parent.)
 - Don't add concurrent-invocation support or multi-tenant concurrency — the
   single-flight model is deliberate.
 - Don't wrap, subclass, or re-version strands-compose types, or add compatibility
   shims for upstream changes — fix in lockstep instead.
+- Don't duck-type (`getattr`/`hasattr` probing) or re-validate what a pinned type
+  already guarantees.
 - Don't hand-roll task/thread/queue plumbing the stdlib provides
   (`TaskGroup`, `asyncio.timeout`, `asyncio.to_thread`) — **except** the
   async-generator entrypoint, which uses an explicit `create_task` + `try/finally`
   on purpose (yielding across a `TaskGroup`/`timeout` is unsafe; see
   *Async & Concurrency*).
+- Don't wrap `resolve_session` / `close_session` in `to_thread` — the platform
+  already isolates the entrypoint from `/ping` (see *Async & Concurrency*).
 - Don't buffer the event stream unboundedly, or swallow `CancelledError`.
 - Don't mix server and client concerns, or add format tables outside the registry.
 - Don't emit an error event that diverges from the upstream error schema

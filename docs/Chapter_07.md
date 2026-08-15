@@ -20,8 +20,8 @@ A lightweight sync client for the local development server. No async, no boto3, 
 from strands_compose_agentcore import LocalClient
 
 client = LocalClient(
-    url="http://localhost:8080/invocations",                # default
-    session_id="default-session-strands-compose-agentcore",   # default
+    url="http://localhost:8080/invocations",  # default
+    session_id="default-session-strands-compose-agentcore",  # default
 )
 
 for event in client.invoke("Hello"):
@@ -36,8 +36,8 @@ for event in client.invoke("Hello"):
 The `invoke()` method is a generator that yields `StreamEvent` objects by default. Pass `raw_output=True` to yield raw SSE lines (`str`) instead — useful when forwarding the stream verbatim (e.g. SSE proxies). Pass `session_id` to override the default for a single call. Raises `ClientConnectionError` if the server is unreachable.
 
 ```python
-client.repl()                          # interactive REPL with colored streaming
-client.repl(session_id="custom")       # override session ID
+client.repl()  # interactive REPL with colored streaming
+client.repl(session_id="custom")  # override session ID
 ```
 
 `LocalClient` supports the `with` statement. The client does not hold persistent connections, so the context manager exists for structural consistency:
@@ -70,8 +70,8 @@ A native-async client for the local development server. Backed by `httpx.AsyncCl
 from strands_compose_agentcore import AsyncLocalClient
 
 client = AsyncLocalClient(
-    url="http://localhost:8080/invocations",                # default
-    session_id="default-session-strands-compose-agentcore",   # default
+    url="http://localhost:8080/invocations",  # default
+    session_id="default-session-strands-compose-agentcore",  # default
 )
 
 async for event in client.invoke("Hello"):
@@ -177,10 +177,10 @@ All client exceptions inherit from `AgentCoreClientError`:
 
 ```python
 from strands_compose_agentcore import (
-    AgentCoreClientError,      # Base exception
-    ClientConnectionError,     # Cannot reach agent
-    AccessDeniedError,         # IAM permission issue
-    ThrottledError,            # Rate limited
+    AgentCoreClientError,  # Base exception
+    ClientConnectionError,  # Cannot reach agent
+    AccessDeniedError,  # IAM permission issue
+    ThrottledError,  # Rate limited
 )
 ```
 
@@ -292,13 +292,16 @@ from strands_compose_agentcore import AgentCoreClient
 
 ARN = "arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/my-agent-XXXXXXXXXX"
 
+
 @asynccontextmanager
 async def lifespan(app):
     async with AgentCoreClient(ARN, region="us-west-2") as client:
         app.state.agent = client
         yield
 
+
 app = FastAPI(lifespan=lifespan)
+
 
 @app.post("/chat")
 async def chat(prompt: str, session_id: str):
@@ -318,6 +321,7 @@ from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from strands_compose_agentcore import AgentCoreClient
 import json
+
 
 @app.post("/stream")
 async def stream(prompt: str, session_id: str):
@@ -339,13 +343,16 @@ from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from strands_compose_agentcore import AsyncLocalClient
 
+
 @asynccontextmanager
 async def lifespan(app):
     async with AsyncLocalClient("http://localhost:8080/invocations") as client:
         app.state.local_agent = client
         yield
 
+
 app = FastAPI(lifespan=lifespan)
+
 
 @app.post("/chat")
 async def chat(prompt: str, session_id: str):
@@ -354,6 +361,7 @@ async def chat(prompt: str, session_id: str):
             prompt, session_id=session_id, raw_output=True
         ):
             yield raw_line + "\n\n"
+
     return StreamingResponse(_stream(), media_type="text/event-stream")
 ```
 
@@ -369,12 +377,14 @@ client = AgentCoreClient(
     region="us-west-2",
 )
 
+
 def handler(event, context):
     prompt = event.get("prompt", "")
     session_id = event.get("session_id", "a" * 33)
 
     events = asyncio.run(collect_events(prompt, session_id))
     return {"statusCode": 200, "body": json.dumps(events)}
+
 
 async def collect_events(prompt, session_id):
     result = []
@@ -391,6 +401,7 @@ from strands_compose_agentcore import AgentCoreClient
 
 client = AgentCoreClient(ARN, region="us-west-2")
 
+
 async def process_prompt(session_id: str, prompt: str) -> list:
     events = []
     async for event in client.invoke(prompt, session_id=session_id):
@@ -398,14 +409,13 @@ async def process_prompt(session_id: str, prompt: str) -> list:
             events.append(event.data.get("text", ""))
     return events
 
+
 async def main():
-    tasks = [
-        process_prompt(f"session-{'x' * 30}-{i}", f"Summarize topic {i}")
-        for i in range(10)
-    ]
+    tasks = [process_prompt(f"session-{'x' * 30}-{i}", f"Summarize topic {i}") for i in range(10)]
     results = await asyncio.gather(*tasks)
     for i, result in enumerate(results):
         print(f"Topic {i}: {''.join(result)}")
+
 
 asyncio.run(main())
 ```

@@ -4,7 +4,7 @@ This chapter covers operational concerns, production configuration, and deployme
 
 ## VPC Configuration
 
-If your agent needs to access resources in a VPC (databases, internal APIs, private MCP servers), configure networking when you register the agent:
+If your agent needs to reach resources in a VPC (databases, internal APIs, privately hosted MCP servers), configure networking when you register the agent:
 
 ```bash
 agentcore add agent \
@@ -51,6 +51,7 @@ To see strands-compose internal logs in CloudWatch, set `log_level: INFO` in you
 
 ```python
 import logging
+
 logging.basicConfig(level=logging.INFO)
 ```
 
@@ -83,13 +84,17 @@ Split large configs across multiple YAML files:
 app = create_app(["base.yaml", "agents.yaml", "tools.yaml"])
 ```
 
-Collection sections (`models`, `agents`, `mcp_servers`, `mcp_clients`, `orchestrations`) are merged across files. Singleton fields (`entry`, `session_manager`, `log_level`) use last-wins semantics — the value from the last file in the list takes precedence. This is useful for sharing common model definitions across environments while keeping agent-specific configs separate.
+Collection sections (`models`, `agents`, `mcp_clients`, `orchestrations`) are merged across files. Singleton fields (`entry`, `session_manager`, `log_level`) use last-wins semantics — the value from the last file in the list takes precedence. This is useful for sharing common model definitions across environments while keeping agent-specific configs separate.
 
 ---
 
-## MCP Server Connectivity
+## MCP Connectivity
 
-At startup, the ASGI lifespan enters the strands-compose MCP lifecycle: stdio-based MCP servers are launched, SSE-based MCP clients connect to their targets, and a validation report is printed summarizing available tools per server. If an MCP connection fails at startup, the validation report shows the failure but the app still starts — broken connections will cause runtime errors only when the agent actually tries to use those tools.
+MCP clients are built with the rest of the session, on the first invocation. A client connects lazily when the agent first needs its tools, so an unreachable server surfaces as a normal agent error on that tool call rather than at startup.
+
+Shutdown is handled for you. strands stops an MCP client — including a `command:` subprocess — from `Agent.__del__`, which fires as soon as the last reference to the agent goes away, and on process exit the subprocess dies with its parent regardless.
+
+The one gap is session replacement. A delegate orchestration wires the delegated agent in as a tool, which puts it in a reference cycle that refcounting cannot reap, so its subprocess would keep running inside a still-live process until an arbitrary later garbage-collection pass. The adapter therefore calls `Agent.cleanup()` explicitly before swapping a cached session out.
 
 ---
 

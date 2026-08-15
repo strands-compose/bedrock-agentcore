@@ -23,10 +23,10 @@ import random
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, overload
+from typing import TYPE_CHECKING, Any, Literal, Self, overload
 
 from .._utils import validate_session_id
-from ..types import AgentInput, RetryConfig, ThrottledError
+from ..types import AgentInput, RetryableConflictError, RetryConfig, ThrottledError
 from .repl import run_repl
 from .utils import (
     DEFAULT_SESSION_ID,
@@ -91,8 +91,8 @@ class AgentCoreClient:
                 ``invoke()`` calls that can stream simultaneously.
                 Each active stream holds one thread while reading the
                 SSE response.
-            retry: Retry configuration for throttled requests.
-                ``None`` disables retry (default).  Pass
+            retry: Retry configuration for throttled and retryable-conflict
+                requests.  ``None`` disables retry (default).  Pass
                 ``RetryConfig()`` for sensible defaults.
 
         Attributes:
@@ -200,8 +200,11 @@ class AgentCoreClient:
                 ``agent_input`` is not a supported shape.
             AccessDeniedError: Credentials lack required permissions.
             ThrottledError: Request was rate-limited.
+            RetryableConflictError: Session was provisioning or tearing down.
             AgentCoreClientError: Any other service error (includes AWS
                 error code and message).
+            OSError: The response stream failed part-way through; events
+                yielded before the failure are still delivered.
         """
         validate_session_id(session_id)
         body = build_invocation_body(agent_input)
@@ -213,7 +216,7 @@ class AgentCoreClient:
                     self._executor, self._invoke_sync, session_id, body
                 )
                 break
-            except ThrottledError:
+            except (ThrottledError, RetryableConflictError):
                 if attempt >= self._retry.max_retries:
                     raise
                 delay = min(
@@ -240,10 +243,12 @@ class AgentCoreClient:
                 loop.call_soon_threadsafe(queue.put_nowait, None)
 
         producer_future = loop.run_in_executor(self._executor, _producer)
+        drained = False
         try:
             while True:
                 line = await queue.get()
                 if line is None:
+                    drained = True
                     break
                 text = line.decode("utf-8").strip()
                 if raw_output:
@@ -254,12 +259,18 @@ class AgentCoreClient:
                     if event is not None:
                         yield event
         finally:
-            close = getattr(stream_body, "close", None)
-            if callable(close):
-                with suppress(Exception):
-                    close()
             with suppress(Exception):
+                stream_body.close()
+            if drained:
+                # The producer's sentinel is emitted on failure too, so awaiting
+                # it here is the only thing that turns a mid-stream transport
+                # error into an exception instead of a clean end of stream.
                 await producer_future
+            else:
+                # Consumer disconnected or raised — don't mask that with the
+                # producer's error.
+                with suppress(Exception):
+                    await producer_future
 
     def repl(self, *, session_id: str | None = None) -> None:
         """Start an interactive REPL that streams agent responses with AnsiRenderer.
@@ -431,7 +442,7 @@ class AgentCoreClient:
         except ClientError as exc:
             raise translate_error(exc) from exc
 
-    async def __aenter__(self) -> AgentCoreClient:
+    async def __aenter__(self) -> Self:
         """Enter the async context manager.
 
         Returns:

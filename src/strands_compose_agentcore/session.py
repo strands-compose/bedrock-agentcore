@@ -1,9 +1,4 @@
-"""Session lifecycle — resolve agents, run entry agent invocations.
-
-Manages the per-session state: lazy agent resolution via
-``load_session()`` and the module-level ``run_entry_agent`` coroutine
-that drives the entry agent and places events on the ``EventQueue``.
-"""
+"""Per-session state: resolution, teardown, and entry-agent invocation."""
 
 from __future__ import annotations
 
@@ -13,6 +8,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
+from strands import Agent
 from strands.agent import AgentResult
 from strands.multiagent import MultiAgentResult
 from strands.types.agent import AgentInput
@@ -20,10 +16,12 @@ from strands_compose import (
     AppConfig,
     EventQueue,
     ResolvedConfig,
-    ResolvedInfra,
-    load_session,
+    load,
+    make_event_queue,
     serialize_multiagent_result,
 )
+from strands_compose.manifest import build_manifest
+from strands_compose.types import SessionManifest
 
 from ._utils import error_event
 
@@ -33,62 +31,99 @@ logger = logging.getLogger(__name__)
 def _session_end_data(response: AgentResult | MultiAgentResult | None) -> dict[str, Any]:
     """Build the SESSION_END payload from the entry node's final response.
 
-    ``text`` is the plain-text answer from the last executing node.
-    ``result`` is the full JSON-serializable strands object — for a
-    ``MultiAgentResult`` this includes ``last_node_id``, ``response``,
-    and orchestration-specific metadata (``swarm`` or ``graph`` section).
-    Empty when ``response`` is ``None`` (invocation raised before returning).
+    ``text`` is the plain-text answer from the last executing node; ``result``
+    is the full JSON-serializable strands object.  Both are empty when the
+    invocation raised before returning.
     """
     if response is None:
         return {"text": "", "result": {}}
     if isinstance(response, AgentResult):
         return {"text": str(response), "result": response.to_dict()}
     serialized = serialize_multiagent_result(response)
-    text = serialized.get("response") or "" if serialized.get("results") else ""
-    return {"text": text, "result": serialized}
+    return {"text": serialized["response"], "result": serialized}
 
 
 @dataclass
 class SessionState:
-    """Cached session state — agents and event queue for one session_id.
+    """Live objects for one session ID.
 
     Args:
-        resolved: Fully resolved config with agents and entry point.
-        events: Event queue wired to all agents via hooks.
-        session_id: The AgentCore runtime session ID this state was
-            resolved for.  Used by the cache-decision logic to detect
-            whether an incoming request matches the cached session.
-        invocation_lock: Prevents concurrent agent invocations within
-            the same session.  AgentCore Runtime allocates one microVM
-            per session, but nothing prevents the caller from sending
-            a second ``/invocations`` before the first one finishes.
+        resolved: Resolved config — agents, orchestrators, entry node.
+        events: Event queue wired to every agent via hooks.
+        manifest: Session topology, emitted with SESSION_START each turn.
+        session_id: The AgentCore session ID this state was resolved for.
+        invocation_lock: Guards against a second ``/invocations`` arriving
+            before the first one finishes.
     """
 
     resolved: ResolvedConfig
     events: EventQueue
+    manifest: SessionManifest
     session_id: str | None = None
     invocation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
-def resolve_session(
-    app_config: AppConfig,
-    infra: ResolvedInfra,
-    session_id: str | None,
-) -> SessionState:
-    """Create agents and wire the event queue for a session.
+def resolve_session(app_config: AppConfig, session_id: str | None) -> SessionState:
+    """Build every live object for a session and wire the event queue.
 
     Args:
-        app_config: Validated config from YAML.
-        infra: Shared infrastructure (models, MCP, session manager).
-        session_id: Runtime session ID from AgentCore header.
+        app_config: Config validated at boot, so no YAML is re-read per session.
+        session_id: Runtime session ID from the AgentCore header.
 
     Returns:
         A ``SessionState`` ready for invocation.
     """
-    resolved = load_session(app_config, infra, session_id=session_id)
-    events = resolved.wire_event_queue(session_id=session_id)
+    resolved = load(app_config, session_id=session_id)
+    manifest = build_manifest(resolved.agents, resolved.orchestrators, resolved.entry)
+    events = make_event_queue(
+        resolved.agents,
+        orchestrators=resolved.orchestrators,
+        entry_name=manifest.entry.name,
+        session_id=session_id,
+    )
     logger.info("session_id=<%s> | session resolved, agents ready", session_id)
-    return SessionState(resolved=resolved, events=events, session_id=session_id)
+    return SessionState(
+        resolved=resolved,
+        events=events,
+        manifest=manifest,
+        session_id=session_id,
+    )
+
+
+def close_session(session: SessionState) -> None:
+    """Release a replaced session's agents so their MCP clients stop immediately.
+
+    Strands stops an ``MCPClient`` from ``Agent.__del__``, so dropping the last
+    reference is usually enough.  It is not enough for an agent wired into a
+    delegate orchestration: agent-as-tool puts it in a reference cycle, which
+    refcounting cannot reap, leaving its stdio subprocess running until an
+    arbitrary later cyclic-GC pass.  ``Agent.cleanup()`` releases the client
+    directly.  Cleanup is best-effort: one failing agent must not block the rest.
+
+    Only needed while the process keeps running.
+    Process exit reaps the subprocess on its own.
+
+    Orchestrators are included because a ``delegate`` orchestration is itself an
+    ``Agent`` holding the same clients while never appearing in
+    ``resolved.agents``.  ``Swarm`` and ``Graph`` are skipped — they are not
+    agents, and their nodes are already covered.
+
+    Args:
+        session: The session being discarded.
+    """
+    nodes: dict[str, Any] = {**session.resolved.agents, **session.resolved.orchestrators}
+    for name, node in nodes.items():
+        if not isinstance(node, Agent):
+            continue
+        try:
+            node.cleanup()
+        except Exception:
+            logger.warning(
+                "session_id=<%s>, agent=<%s> | agent cleanup failed",
+                session.session_id,
+                name,
+                exc_info=True,
+            )
 
 
 async def run_entry_agent(
@@ -107,7 +142,7 @@ async def run_entry_agent(
     after the close runs.
 
     Args:
-        resolved: Fully resolved config; ``resolved.entry`` is the entry agent.
+        resolved: Resolved config; ``resolved.entry`` is the entry agent.
         events: The session's wired ``EventQueue``.
         agent_input: User turn forwarded to the entry agent.
         invocation_timeout: Max seconds to wait; ``None`` disables the timeout.
@@ -119,7 +154,7 @@ async def run_entry_agent(
         math.isnan(invocation_timeout) or invocation_timeout <= 0
     ):
         raise ValueError(
-            "invocation_timeout must be positive and finite, got <%s>" % invocation_timeout
+            f"invocation_timeout must be positive and finite, got <{invocation_timeout}>"
         )
 
     input_kind = type(agent_input).__name__
@@ -136,7 +171,7 @@ async def run_entry_agent(
         )
         events.put_event(
             error_event(
-                "Agent invocation timed out after %s seconds" % invocation_timeout,
+                f"Agent invocation timed out after {invocation_timeout} seconds",
                 exception_type="TimeoutError",
             )
         )
@@ -146,11 +181,9 @@ async def run_entry_agent(
         logger.exception("input_kind=<%s> | agent invocation failed", input_kind)
         events.put_event(
             error_event(
-                "Internal error during agent invocation: %s" % str(e),
+                f"Internal error during agent invocation: {e}",
                 exception_type=type(e).__name__,
             )
         )
     finally:
-        # Include the entry node's final response in the SESSION_END event.
-        # ``response`` is None when the invocation raised before returning.
         await events.close(data=_session_end_data(response))

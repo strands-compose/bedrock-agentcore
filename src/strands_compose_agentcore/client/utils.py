@@ -50,8 +50,7 @@ def parse_sse_line(text: str) -> StreamEvent | None:
     """
     if not text:
         return None
-    if text.startswith(_SSE_DATA_PREFIX):
-        text = text[len(_SSE_DATA_PREFIX) :]
+    text = text.removeprefix(_SSE_DATA_PREFIX)
     try:
         event_dict = json.loads(text)
     except json.JSONDecodeError:
@@ -119,4 +118,4 @@ def build_invocation_body(agent_input: AgentInput) -> dict[str, Any]:
         return {"prompt": [agent_input]}
     if isinstance(agent_input, list) and agent_input:
         return {"prompt": list(agent_input)}
-    raise ValueError("invalid agent_input: %r" % (agent_input,))
+    raise ValueError(f"invalid agent_input: {agent_input!r}")

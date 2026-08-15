@@ -16,22 +16,25 @@ This architecture means there is no cross-session state: two different session I
 
 ## Session Lifecycle
 
-A session represents a single conversation with preserved agent state. The lifecycle mirrors the two-phase resolution described in [Chapter 03](Chapter_03.md):
+A session represents a single conversation with preserved agent state. The lifecycle mirrors the config/session split described in [Chapter 03](Chapter_03.md):
 
 1. **First request arrives** — the app reads the session ID from the runtime header
-2. **Session resolves** — `load_session()` creates agents, orchestrations, and the entry point
-3. **Event queue wires up** — `resolved.wire_event_queue()` connects all agents to a shared `EventQueue` for streaming
-4. **Cached** — the `SessionState` is stored in `app.state.session` for reuse
-5. **Follow-up requests** — same session ID reuses the cached agents and conversation history. The event queue is flushed between turns to discard stale events
-6. **New session ID** — the old session is discarded and fresh agents are created
+2. **Session resolves** — `load()` builds models, MCP clients, agents, orchestrations, and the entry point
+3. **Topology is described** — `build_manifest()` snapshots the wired agents, orchestrations, and entry point once
+4. **Event queue wires up** — `make_event_queue()` connects all agents to a shared `EventQueue` for streaming
+5. **Cached** — the `SessionState` is stored in `app.state.session` for reuse
+6. **Follow-up requests** — same session ID reuses the cached agents and conversation history. The event queue is flushed between turns to discard stale events, then the manifest is re-emitted as `session_start`
+7. **New session ID** — the cached session is closed (`Agent.cleanup()` on every agent, stopping its MCP clients) and fresh agents are created
 
 The `SessionState` dataclass holds everything needed for a session:
 
 ```python
 @dataclass
 class SessionState:
-    resolved: ResolvedConfig       # Agents, orchestrations, entry point
-    events: EventQueue             # Shared event queue for streaming
+    resolved: ResolvedConfig  # Agents, orchestrations, entry point
+    events: EventQueue  # Shared event queue for streaming
+    manifest: SessionManifest  # Topology, re-emitted with session_start
+    session_id: str | None  # The session this state was resolved for
     invocation_lock: asyncio.Lock  # Prevents concurrent invocations
 ```
 
@@ -66,6 +69,7 @@ Events are `StreamEvent` objects defined by [strands-compose](https://github.com
 | `tool_start` | Agent is calling a tool |
 | `tool_end` | Tool returned a result |
 | `reasoning` | Model's reasoning/thinking output |
+| `interrupt` | Agent is waiting for a human reply — resume with a `reply` block |
 | `agent_complete` | Agent finished processing |
 | `error` | Something went wrong |
 
@@ -118,14 +122,22 @@ The manifest describes the full wired topology: every agent, orchestration, and 
 
 | Field | Description |
 |-------|-------------|
-| `text` | Plain-text answer from the entry node. For `AgentResult` this is `str(result)`; for `MultiAgentResult` it is the `str()` of the last contained `AgentResult`. Empty string when the invocation raised before returning. |
+| `text` | Plain-text answer from the entry node. For `AgentResult` this is `str(result)`; for `MultiAgentResult` it is the text of the last node that executed. Empty string when the invocation raised before returning. |
 | `result` | Full `to_dict()` serialization of the strands result object. `type` is `"agent_result"` for single-agent entry or `"multiagent_result"` for orchestration entry — the latter nests each node's `AgentResult` under `results[<node_name>]`. |
 
 `session_end` is always the last event in a turn — it is emitted even when the invocation times out or raises, so consumers can rely on it as a clean turn-complete signal.
 
 ### Error Handling
 
-If the agent raises an exception during invocation, the error is logged, an `error` event with `{"message": "Internal error during agent invocation"}` is pushed to the queue, and the queue is closed. The server does not crash — it remains ready for the next invocation.
+If the agent raises an exception during invocation, the error is logged, an `error` event is pushed to the queue, and the queue is closed. The server does not crash — it remains ready for the next invocation.
+
+Every error event carries the same two keys as an agent-level error from strands-compose, so one consumer branch handles both:
+
+```jsonc
+{"text": "Internal error during agent invocation: ...", "exception_type": "RuntimeError"}
+```
+
+`exception_type` is the exception's class name, or a stable synthetic token for adapter-originated failures (`AgentBusy`, `TimeoutError`, `MultimodalPayloadError`).
 
 ## Multimodal Payloads
 
@@ -167,11 +179,13 @@ For client code, `strands_compose_agentcore.media` ships pure builders for all b
 from strands_compose_agentcore import LocalClient, document, image, text
 
 client = LocalClient()
-for event in client.invoke([
-    image("cat.png"),
-    document("report.pdf"),
-    text("Describe the image and summarise the document."),
-]):
+for event in client.invoke(
+    [
+        image("cat.png"),
+        document("report.pdf"),
+        text("Describe the image and summarise the document."),
+    ]
+):
     print(event.type, event.data)
 ```
 
@@ -181,6 +195,25 @@ for event in client.invoke([
 | `image(path_or_bytes)` | `{"image": {"format": ..., "source": {"base64": ...}}}` | Path or raw bytes; format inferred from extension |
 | `document(path_or_bytes)` | `{"document": {"format": ..., "name": ..., "source": {"base64": ...}}}` | Path or raw bytes; format and name inferred from extension |
 | `reply(interrupt_id, response)` | `{"reply": {"interrupt_id": ..., "response": ...}}` | Resuming a pending interrupt |
+
+### Resuming an interrupt
+
+When an agent needs human input it emits an `interrupt` event and the turn ends:
+
+```jsonc
+{"interrupt_id": "int-7f2a", "name": "confirm_delete", "reason": "Confirm before deleting 12 files"}
+```
+
+Send the answer back on the next turn with `reply()`, using the `interrupt_id` from that event:
+
+```python
+from strands_compose_agentcore import reply
+
+for event in client.invoke([reply("int-7f2a", True)]):
+    print(event.type, event.data)
+```
+
+Reply blocks cannot be mixed with `text`, `image`, or `document` blocks in one turn — the payload parser rejects a mixed list.
 
 ### Size limits
 
@@ -200,9 +233,9 @@ Delegate tools generated by `strands-compose` accept text input only, so sub-age
 
 ## Concurrency
 
-Only one invocation can run at a time per session. This is enforced by an `asyncio.Lock` on the `SessionState`. If a second request arrives while the first is still running, the server returns an error event (`"agent is already running, try again later"`) and reports `HEALTHY_BUSY` on `/ping` so AgentCore Runtime can back off. The lock is released when the invocation completes, whether it succeeds or fails.
+Only one invocation can run at a time per session. This is enforced by an `asyncio.Lock` on the `SessionState`. If a second request arrives while the first is still running, the server returns an error event with `exception_type: "AgentBusy"` and reports `HEALTHY_BUSY` on `/ping` so AgentCore Runtime can back off. The lock is released when the invocation completes, whether it succeeds or fails.
 
-On AgentCore Runtime, each session gets its own microVM, so there is no cross-session concurrency within a single app instance. If a request arrives with a different session ID while the server is idle, the old session is discarded and a new one is created — this is expected behavior for the one-microVM-per-session model.
+On AgentCore Runtime, each session gets its own microVM, so there is no cross-session concurrency within a single app instance. If a request arrives with a different session ID while the server is idle, the old session is closed and a new one is created — this is expected behavior for the one-microVM-per-session model.
 
 ## Conversation Persistence
 

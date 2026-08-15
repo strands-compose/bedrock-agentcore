@@ -72,8 +72,7 @@ def parse_payload(
             raise MultimodalPayloadError("payload is not JSON-serializable") from exc
         if encoded_size > max_payload_bytes:
             raise MultimodalPayloadError(
-                "payload size %d bytes exceeds max_payload_bytes=%d"
-                % (encoded_size, max_payload_bytes)
+                f"payload size {encoded_size} bytes exceeds max_payload_bytes={max_payload_bytes}"
             )
 
     if "prompt" not in payload:
@@ -118,7 +117,7 @@ def _decode_blocks(
         media_count += 1
         if media_count > max_media_blocks:
             raise MultimodalPayloadError(
-                "media block count %d exceeds max_media_blocks=%d" % (media_count, max_media_blocks)
+                f"media block count {media_count} exceeds max_media_blocks={max_media_blocks}"
             )
 
     decoded_blocks = [_decode_block(block, max_media_bytes, _bump) for block in blocks]
@@ -172,21 +171,21 @@ def _decode_media(
 ) -> dict[str, Any]:
     """Decode an image or document block into the Strands media shape."""
     if not isinstance(value, Mapping):
-        raise MultimodalPayloadError("%s block must be a JSON object" % kind)
+        raise MultimodalPayloadError(f"{kind} block must be a JSON object")
 
     allowed_keys = {"format", "source"}
     if kind == "document":
         allowed_keys.add("name")
     if set(value) != allowed_keys:
         expected = sorted(allowed_keys)
-        raise MultimodalPayloadError("%s block must contain exactly %s" % (kind, expected))
+        raise MultimodalPayloadError(f"{kind} block must contain exactly {expected}")
 
     media_format = value["format"]
     if not isinstance(media_format, str):
-        raise MultimodalPayloadError("%s.format must be a string" % kind)
+        raise MultimodalPayloadError(f"{kind}.format must be a string")
     allowed_formats = IMAGE_FORMATS if kind == "image" else DOCUMENT_FORMATS
     if media_format not in allowed_formats:
-        raise MultimodalPayloadError("%s.format %r is not supported" % (kind, media_format))
+        raise MultimodalPayloadError(f"{kind}.format {media_format!r} is not supported")
 
     decoded: dict[str, Any] = {
         "format": media_format,
@@ -218,7 +217,7 @@ def _decode_source(
         raise MultimodalPayloadError("media source is not valid base64") from exc
     if len(decoded) > max_media_bytes:
         raise MultimodalPayloadError(
-            "media block size %d bytes exceeds max_media_bytes=%d" % (len(decoded), max_media_bytes)
+            f"media block size {len(decoded)} bytes exceeds max_media_bytes={max_media_bytes}"
         )
     bump_media()
     return {"bytes": decoded}
