@@ -5,12 +5,12 @@ check: check-format check-code check-type check-security
 # check code quality
 [group('check')]
 check-code:
-    uv run ruff check {{SOURCES}} {{TESTS}}
+    uv run ruff check {{SOURCES}} {{TESTS}} {{EXAMPLES}}
 
-# check code format
+# check code format (DOCS covers python blocks inside markdown)
 [group('check')]
 check-format:
-    uv run ruff format --check {{SOURCES}} {{TESTS}}
+    uv run ruff format --check {{SOURCES}} {{TESTS}} {{EXAMPLES}} {{DOCS}}
 
 # check code security
 [group('check')]

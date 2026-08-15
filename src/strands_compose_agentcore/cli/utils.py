@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 
-from .._utils import ansi  # noqa: F401 — re-exported for cli consumers
+from .._utils import ansi
 
 # ---------------------------------------------------------------------------
 # Colours — call-time TTY detection via ansi()

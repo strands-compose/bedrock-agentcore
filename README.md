@@ -75,10 +75,11 @@ The real value of this package is a single factory function. AgentCore Runtime e
 
 ```python
 from strands_compose_agentcore import create_app
+
 app = create_app("config.yaml")  # that's it
 ```
 
-Without this factory, you'd need to manually wire `load_config`, `resolve_infra`, `load_session`, ASGI lifespan, MCP lifecycle, session caching, event queue plumbing, streaming serialization, and concurrency guards. `create_app()` does all of that in one call.
+Without this factory, you'd need to manually wire `load_config`, per-session `load`, the ASGI lifespan, session caching and teardown, event queue plumbing, streaming serialization, and concurrency guards. `create_app()` does all of that in one call.
 
 ### 🛠️ CLI for strands-compose streaming events
 
@@ -106,7 +107,7 @@ See [Chapter 09 — Deployment Strategies](docs/Chapter_09.md) for a deep dive o
 │  (models, agents, tools, orchestrations)                    │
 ├─────────────────────────────────────────────────────────────┤
 │  strands-compose                                            │  ← Parses YAML,
-│  (load_config, resolve_infra, load_session)                 │     resolves agents
+│  (load_config, load)                                        │     resolves agents
 ├─────────────────────────────────────────────────────────────┤
 │  strands-compose-agentcore       ◄── THIS PACKAGE           │  ← Wraps as ASGI app,
 │  (app factory, CLI toolkit, AgentCoreClient)                │     CLI, client

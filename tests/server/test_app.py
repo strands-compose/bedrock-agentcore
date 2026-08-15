@@ -1,11 +1,7 @@
 """Integration tests for the /invocations entrypoint (Starlette TestClient).
 
 These drive the real ASGI app and fake strands-compose at our own
-``resolve_session`` seam.  ``build_manifest`` is a real strands-compose
-function that needs real resolved agents to build a manifest, so on the paths
-that reach it (a successful stream) it is patched at our app seam to return a
-minimal real ``SessionManifest`` -- the doctrine's sanctioned fallback for
-adapter-seam tests.  Fault paths return before the manifest and need no patch.
+``resolve_session`` seam, so no real agent, model, or MCP client is built.
 """
 
 from __future__ import annotations
@@ -15,7 +11,6 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from strands_compose.manifest import EntryDescriptor, SessionManifest
 
 from tests.fakes.compose import FakeEntry, FakeResolvedConfig, FakeSessionState
 
@@ -30,20 +25,12 @@ def _sse_events(response: Any) -> list[dict[str, Any]]:
         text = line.strip()
         if not text:
             continue
-        if text.startswith("data: "):
-            text = text[6:]
+        text = text.removeprefix("data: ")
         try:
             events.append(json.loads(text))
         except json.JSONDecodeError:
             continue
     return events
-
-
-def _minimal_manifest() -> SessionManifest:
-    """A real, empty SessionManifest usable by emit_session_start.model_dump()."""
-    return SessionManifest(
-        agents=[], orchestrations=[], entry=EntryDescriptor(name="entry", kind="agent")
-    )
 
 
 @pytest.mark.integration
@@ -53,10 +40,7 @@ class TestInvocationsHappyPath:
     def test_invocations_streams_session_start_and_closes(self, test_client) -> None:
         fake_session = FakeSessionState(resolved=FakeResolvedConfig(entry=FakeEntry(result=None)))
 
-        with (
-            patch("strands_compose_agentcore.app.resolve_session", return_value=fake_session),
-            patch("strands_compose_agentcore.app.build_manifest", return_value=_minimal_manifest()),
-        ):
+        with patch("strands_compose_agentcore.app.resolve_session", return_value=fake_session):
             response = test_client.post(
                 "/invocations",
                 json={"prompt": "Hello"},
@@ -130,16 +114,13 @@ class TestInvocationsSessionCaching:
     def test_invocations_reuses_cached_session_for_same_id(self, test_client) -> None:
         resolutions: list[str | None] = []
 
-        def _counting_resolve(app_config, infra, session_id):
+        def _counting_resolve(app_config, session_id):
             resolutions.append(session_id)
             return FakeSessionState(
                 resolved=FakeResolvedConfig(entry=FakeEntry()), session_id=session_id
             )
 
-        with (
-            patch("strands_compose_agentcore.app.resolve_session", side_effect=_counting_resolve),
-            patch("strands_compose_agentcore.app.build_manifest", return_value=_minimal_manifest()),
-        ):
+        with patch("strands_compose_agentcore.app.resolve_session", side_effect=_counting_resolve):
             test_client.post("/invocations", json={"prompt": "1"}, headers={_HEADER: _SID})
             test_client.post("/invocations", json={"prompt": "2"}, headers={_HEADER: _SID})
 
@@ -148,17 +129,31 @@ class TestInvocationsSessionCaching:
     def test_invocations_re_resolves_for_new_session_id(self, test_client) -> None:
         resolutions: list[str | None] = []
 
-        def _counting_resolve(app_config, infra, session_id):
+        def _counting_resolve(app_config, session_id):
             resolutions.append(session_id)
             return FakeSessionState(
                 resolved=FakeResolvedConfig(entry=FakeEntry()), session_id=session_id
             )
 
-        with (
-            patch("strands_compose_agentcore.app.resolve_session", side_effect=_counting_resolve),
-            patch("strands_compose_agentcore.app.build_manifest", return_value=_minimal_manifest()),
-        ):
+        with patch("strands_compose_agentcore.app.resolve_session", side_effect=_counting_resolve):
             test_client.post("/invocations", json={"prompt": "1"}, headers={_HEADER: "a" * 40})
             test_client.post("/invocations", json={"prompt": "2"}, headers={_HEADER: "b" * 40})
 
         assert resolutions == ["a" * 40, "b" * 40]
+
+    def test_invocations_closes_the_replaced_session(self, test_client) -> None:
+        # Without this, a delegated agent's MCP subprocess outlives the session
+        # it belonged to (it sits in a reference cycle refcounting can't reap).
+        sessions = [
+            FakeSessionState(resolved=FakeResolvedConfig(entry=FakeEntry()), session_id="a" * 40),
+            FakeSessionState(resolved=FakeResolvedConfig(entry=FakeEntry()), session_id="b" * 40),
+        ]
+
+        with (
+            patch("strands_compose_agentcore.app.resolve_session", side_effect=sessions),
+            patch("strands_compose_agentcore.app.close_session") as mock_close,
+        ):
+            test_client.post("/invocations", json={"prompt": "1"}, headers={_HEADER: "a" * 40})
+            test_client.post("/invocations", json={"prompt": "2"}, headers={_HEADER: "b" * 40})
+
+        mock_close.assert_called_once_with(sessions[0])

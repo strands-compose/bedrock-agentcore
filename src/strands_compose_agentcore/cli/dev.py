@@ -26,8 +26,6 @@ def cmd_dev(args: argparse.Namespace) -> None:
 
         sca dev --config base.yaml,agents.yaml,tools.yaml
 
-    A single path (no comma) continues to work exactly as before.
-
     Args:
         args: Parsed CLI arguments (config, port, session_id).
 

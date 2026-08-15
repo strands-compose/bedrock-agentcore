@@ -29,10 +29,6 @@ class TestParsePayloadStringPrompts:
         result = parse_payload(payload("Hello agent"), **_DEFAULTS)
         assert result == "Hello agent"
 
-    def test_payload_accepts_unicode_string_prompt(self) -> None:
-        result = parse_payload(payload("Hola mundo!"), **_DEFAULTS)
-        assert result == "Hola mundo!"
-
     def test_payload_rejects_empty_string_prompt_with_error(self) -> None:
         with pytest.raises(MultimodalPayloadError):
             parse_payload(payload(""), **_DEFAULTS)

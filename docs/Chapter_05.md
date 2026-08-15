@@ -35,9 +35,11 @@ Because the server runs in a daemon thread within the same process, exiting the 
 |------|---------|-------------|
 | `--config` | `./config.yaml` | Path to strands-compose YAML config |
 | `--port` | `8080` | Port for the HTTP server |
-| `--session-id` | auto-generated | Session ID for the REPL |
+| `--session-id` | `default-session-strands-compose-agentcore` | Session ID for the REPL |
 
 If the port is already in use, the command exits with an error message suggesting `--port <number>`.
+
+> **`dev` is for local use only.** It enables CORS for all origins and the `/invocations` endpoint has no authentication. Outside a container it binds `127.0.0.1`; inside one (devcontainer, Docker) the runtime binds `0.0.0.0` so the port is reachable from the host — which also exposes it to anything else that can reach that interface. Don't run `sca dev` on a host with a public interface.
 
 ---
 
@@ -60,7 +62,7 @@ Under the hood, this creates a `LocalClient` — a sync HTTP client using `urlli
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--url` | `http://localhost:8080/invocations` | Server URL |
-| `--session-id` | auto-generated | Session ID header value |
+| `--session-id` | `default-session-strands-compose-agentcore` | Session ID header value |
 
 ### `client remote`
 
@@ -79,7 +81,7 @@ Under the hood, this creates an `AgentCoreClient` — an async boto3 wrapper —
 |------|---------|-------------|
 | `--arn` | required | Full ARN of the deployed agent runtime |
 | `--region` | boto3 default | AWS region override |
-| `--session-id` | auto-generated UUID | Session ID (must be 33-256 chars for AgentCore) |
+| `--session-id` | `default-session-strands-compose-agentcore` | Session ID (must be 33-256 chars for AgentCore) |
 
 ### REPL Commands
 

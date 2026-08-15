@@ -11,14 +11,13 @@ from strands_compose_agentcore import create_app
 app = create_app(Path(__file__).parent / "config.yaml")
 ```
 
-That single call does four things: it parses the YAML into an `AppConfig` via `load_config()`, resolves models, MCP servers/clients, and session managers via `resolve_infra()`, creates a `BedrockAgentCoreApp` with an ASGI lifespan that manages MCP infrastructure, and registers an `/invocations` entrypoint that handles agent invocations with SSE streaming.
+That single call does three things: it parses the YAML into an `AppConfig` via `load_config()`, creates a `BedrockAgentCoreApp` with an ASGI lifespan that holds that config, and registers an `/invocations` entrypoint that handles agent invocations with SSE streaming.
 
 ## Signature
 
 ```python
 def create_app(
     config: str | Path | list[str | Path] | AppConfig,
-    infra: ResolvedInfra | None = None,
     *,
     cors_origins: list[str] | None = None,
     suppress_runtime_logging: bool = False,
@@ -34,7 +33,6 @@ def create_app(
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `config` | `str \| Path \| list \| AppConfig` | required | YAML file path, list of paths, or pre-built `AppConfig` |
-| `infra` | `ResolvedInfra \| None` | `None` | Pre-resolved infrastructure. `None` calls `resolve_infra()` automatically |
 | `cors_origins` | `list[str] \| None` | `None` | Allowed CORS origins. Set to `["*"]` for local dev |
 | `suppress_runtime_logging` | `bool` | `False` | Remove the JSON log handler on `bedrock_agentcore.app` logger |
 | `invocation_timeout` | `float \| None` | `None` | Max seconds for a single invocation. `None` means no timeout |
@@ -56,11 +54,12 @@ app = create_app(["base.yaml", "agents.yaml"])
 
 # Pre-built AppConfig
 from strands_compose import load_config
+
 config = load_config("config.yaml")
 app = create_app(config)
 ```
 
-When you pass multiple YAML files, collection sections (`models`, `agents`, `mcp_servers`, `mcp_clients`, `orchestrations`) are merged, while singleton fields (`entry`, `session_manager`, `log_level`) use last-wins semantics. This is useful for separating shared model definitions from per-environment agent configs.
+When you pass multiple YAML files, collection sections (`models`, `agents`, `mcp_clients`, `orchestrations`) are merged, while singleton fields (`entry`, `session_manager`, `log_level`) use last-wins semantics. This is useful for separating shared model definitions from per-environment agent configs.
 
 ### Return Value
 
@@ -71,19 +70,19 @@ The factory returns a [`BedrockAgentCoreApp`](https://pypi.org/project/bedrock-a
 
 For local development, call `app.run(port=8080)` to start it with uvicorn. In production on AgentCore Runtime, the runtime imports your module and discovers the `app` variable directly — you never call `run()` yourself.
 
-## Two-Phase Resolution
+## Config at Boot, Everything Live per Session
 
-The factory implements a strict separation between infrastructure and session state. This is not an arbitrary design choice — it follows from how AgentCore Runtime works. Models and MCP connections are expensive to create and should be shared across all requests, while agents need a session ID (which only arrives with the first request) to initialize their conversation history.
+The factory separates *parsing* the config from *building* it. That follows from how AgentCore Runtime works: agents need a session ID to initialize their conversation history, and the session ID only arrives with the first request.
 
-### Phase 1: Infrastructure (at boot)
+### At boot: validate the config
 
-When the ASGI lifespan starts, strands-compose enters its MCP lifecycle: stdio-based MCP servers are launched, SSE-based MCP clients connect to their targets, and a validation report is printed summarizing available tools. The resolved infrastructure — models, MCP connections, and session managers — is stored in `app.state` and shared across all invocations. No agents exist yet.
+`create_app()` parses and validates the YAML immediately, so a malformed config fails before the server starts. The resulting `AppConfig` is pure data — no agents, no models, no MCP clients — and it is stashed on `app.state` so no YAML is re-read per session.
 
-### Phase 2: Session (on first invocation)
+### On first invocation: build the session
 
-When the first `POST /invocations` request arrives, the app reads the session ID from the `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id` header and calls `load_session(app_config, infra, session_id=...)` to create agents, orchestrations, and the entry point. An `EventQueue` is wired to all agents for streaming. This session state is cached — follow-up prompts within the same session reuse the same agents, preserving conversation history. Only the event queue is flushed between turns to discard stale events.
+When the first `POST /invocations` request arrives, the app reads the session ID from the `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id` header and calls `load(app_config, session_id=...)` to build models, MCP clients, agents, orchestrations, and the entry point. An `EventQueue` is wired to all agents for streaming. This session state is cached — follow-up prompts within the same session reuse the same agents, preserving conversation history. Only the event queue is flushed between turns to discard stale events.
 
-If a request arrives with a *different* session ID while the server is idle, the old session is discarded and a fresh one is created. On AgentCore Runtime this is expected — each session gets its own microVM, so a different session ID means routing has changed.
+If a request arrives with a *different* session ID while the server is idle, the old session is closed (`Agent.cleanup()` on each agent, releasing its MCP clients and any `command:` subprocess) and a fresh one is built. On AgentCore Runtime this is expected — each session gets its own microVM, so a different session ID means routing has changed.
 
 ## The `/invocations` Entrypoint
 
@@ -91,7 +90,7 @@ Each request goes through this sequence:
 
 1. **Validate** — checks that the JSON payload contains a `prompt` key whose value is a string, a single content block, or a list of content blocks
 2. **Concurrency guard** — if an invocation is already in progress, rejects the request with an error event and reports `HEALTHY_BUSY` on `/ping` so AgentCore Runtime can back off
-3. **Resolve session** — creates agents on first call (lazy), reuses on subsequent calls within the same session
+3. **Resolve session** — builds every live object on the first call, reuses them on subsequent calls within the same session
 4. **Stream** — runs the entry agent asynchronously and yields `StreamEvent` dicts as Server-Sent Events
 
 ### Request and Response

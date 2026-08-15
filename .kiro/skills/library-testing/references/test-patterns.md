@@ -17,8 +17,8 @@ order — never on private members, mock calls, or message prose.**
 
 One authoritative fake per external seam. `FakeEntry` covers every entry-agent
 outcome the doctrine cares about — success, raise, timeout/never-complete, and a
-gated run for deterministic concurrency tests. `EventQueue` is **real** (owned by
-strands-compose, cheap, deterministic).
+gated run for deterministic concurrency tests. `EventQueue` and `SessionManifest`
+are **real** (owned by strands-compose, cheap, deterministic).
 
 ```python
 from __future__ import annotations
@@ -28,6 +28,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from strands_compose import EventQueue
+from strands_compose.types import SessionManifest
+
+from tests.factories import minimal_manifest
 
 
 class FakeEntry:
@@ -63,16 +66,12 @@ class FakeEntry:
 class FakeResolvedConfig:
     """Minimal stand-in for strands_compose.ResolvedConfig.
 
-    Only the fields our adapter reads are present. ``wire_event_queue`` returns
-    a REAL EventQueue so drain/close behaviour is exercised for real.
+    Only the fields our adapter reads are present.
     """
 
     entry: FakeEntry = field(default_factory=FakeEntry)
     agents: dict = field(default_factory=dict)
     orchestrators: dict = field(default_factory=dict)
-
-    def wire_event_queue(self, session_id: str | None = None) -> EventQueue:
-        return EventQueue(session_id=session_id)
 
 
 @dataclass
@@ -80,13 +79,28 @@ class FakeSessionState:
     """Pre-built SessionState for app entrypoint tests.
 
     Mirrors the real ``SessionState``: a resolved config, a real EventQueue, a
-    session id, and a real asyncio.Lock (so locking tests use the real primitive).
+    real manifest, a session id, and a real asyncio.Lock (so locking tests use
+    the real primitive).
     """
 
     resolved: FakeResolvedConfig = field(default_factory=FakeResolvedConfig)
-    events: EventQueue = field(default_factory=EventQueue)
+    events: EventQueue = field(default_factory=lambda: EventQueue(asyncio.Queue()))
+    manifest: SessionManifest = field(default_factory=minimal_manifest)
     session_id: str | None = "a-session-id-long-enough-to-pass-validation-0001"
     invocation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+```
+
+A resolved agent is **not** hand-faked: `close_session` narrows with
+`isinstance(node, Agent)`, so a double must carry the spec.
+
+```python
+from unittest.mock import Mock
+
+from strands import Agent
+
+agent = Mock(spec=Agent)                       # passes isinstance, records cleanup()
+failing = Mock(spec=Agent)
+failing.cleanup.side_effect = RuntimeError("boom")
 ```
 
 ---
@@ -156,6 +170,9 @@ from __future__ import annotations
 import base64
 from typing import Any
 
+from strands_compose import AppConfig, load_config
+from strands_compose.types import EntryDescriptor, SessionManifest
+
 
 def payload(prompt: Any = "Hello") -> dict[str, Any]:
     """A minimal valid invocation payload. Override prompt to test variants."""
@@ -190,7 +207,22 @@ LIMITS: dict[str, Any] = {
     "max_media_bytes": 1024 * 1024,
     "max_media_blocks": 5,
 }
+
+
+def minimal_app_config() -> AppConfig:
+    """The smallest config that validates -- one agent, no model, no MCP."""
+    return load_config("agents:\n  helper:\n    system_prompt: hi\nentry: helper\n")
+
+
+def minimal_manifest() -> SessionManifest:
+    """A real, empty SessionManifest -- enough for emit_session_start."""
+    return SessionManifest(
+        agents=[], orchestrations=[], entry=EntryDescriptor(name="entry", kind="agent")
+    )
 ```
+
+`minimal_app_config()` lets `create_app` run its real `load_config` path without
+touching the filesystem, so no factory-level patching is needed.
 
 ---
 
@@ -271,7 +303,7 @@ def test_unsupported_image_format_rejected(bad_format):
 
 ---
 
-## 6. Entry-agent run — `tests/server/test_session.py`
+## 6. Session resolution, teardown, entry-agent run — `tests/server/test_session.py`
 
 Real `EventQueue`; `FakeEntry` controls the outcome. Assert events-on-queue and
 that the queue closes (drain to `None`). Gates, not sleeps.
@@ -280,11 +312,15 @@ that the queue closes (drain to `None`). Gates, not sleeps.
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import Mock, patch
 
 import pytest
+from strands import Agent
+from strands_compose import EventQueue
 
-from strands_compose_agentcore.session import run_entry_agent
-from tests.fakes.compose import FakeEntry, FakeResolvedConfig
+from strands_compose_agentcore.session import close_session, resolve_session, run_entry_agent
+from tests.factories import minimal_manifest
+from tests.fakes.compose import FakeEntry, FakeResolvedConfig, FakeSessionState
 
 
 async def _drain(events) -> list:
@@ -294,32 +330,43 @@ async def _drain(events) -> list:
     return collected
 
 
+def test_resolve_session_threads_session_id():
+    # build_manifest needs real resolved agents, so it is patched at our seam.
+    with (
+        patch("strands_compose_agentcore.session.load", return_value=FakeResolvedConfig()),
+        patch("strands_compose_agentcore.session.build_manifest", return_value=minimal_manifest()),
+    ):
+        state = resolve_session(object(), "a-session-id-long-enough-to-pass-0001")
+
+    assert state.session_id == "a-session-id-long-enough-to-pass-0001"
+
+
+def test_close_session_continues_after_a_failing_agent():
+    failing, healthy = Mock(spec=Agent), Mock(spec=Agent)
+    failing.cleanup.side_effect = RuntimeError("boom")
+    state = FakeSessionState(
+        resolved=FakeResolvedConfig(agents={"bad": failing, "good": healthy}),
+    )
+
+    close_session(state)
+
+    healthy.cleanup.assert_called_once()
+
+
 async def test_run_closes_queue_on_success():
     resolved = FakeResolvedConfig(entry=FakeEntry(result="done"))
-    events = resolved.wire_event_queue(session_id="s")
-    events.flush()
-
-    await run_entry_agent(resolved, events, "Hello")
-
-    assert await events.get() is None  # closed
-
-
-async def test_run_emits_error_event_then_closes_on_failure():
-    resolved = FakeResolvedConfig(entry=FakeEntry(error=RuntimeError("boom")))
-    events = resolved.wire_event_queue(session_id="s")
-    events.flush()
+    events = EventQueue(asyncio.Queue(), session_id="s")
 
     await run_entry_agent(resolved, events, "Hello")
 
     collected = await _drain(events)
-    assert any(e.type == "error" for e in collected)
+    assert any(e.type == "session_end" for e in collected)
 
 
 async def test_run_times_out_via_gate_not_clock():
     gate = asyncio.Event()  # never set -> entry never completes on its own
     resolved = FakeResolvedConfig(entry=FakeEntry(gate=gate))
-    events = resolved.wire_event_queue(session_id="s")
-    events.flush()
+    events = EventQueue(asyncio.Queue(), session_id="s")
 
     await run_entry_agent(resolved, events, "Hello", invocation_timeout=0.01)
 
@@ -330,7 +377,7 @@ async def test_run_times_out_via_gate_not_clock():
 @pytest.mark.parametrize("bad", [0, -1, float("nan")])
 async def test_non_positive_timeout_raises(bad):
     resolved = FakeResolvedConfig()
-    events = resolved.wire_event_queue()
+    events = EventQueue(asyncio.Queue())
     with pytest.raises(ValueError, match="invocation_timeout"):
         await run_entry_agent(resolved, events, "Hi", invocation_timeout=bad)
 ```
@@ -379,10 +426,11 @@ def test_busy_session_is_rejected(app):
         assert "error" in resp.text
 ```
 
-> For full-fidelity end-to-end tests, build the app from a tiny real YAML with
-> the model provider faked at strands-compose's `resolve_model` seam (see the
-> `library-development` skill). That runs real `load_session` + `build_manifest`,
-> so you never patch `build_manifest`.
+> The entrypoint reads `session.manifest`, so faking `resolve_session` is enough —
+> nothing else needs patching. For full-fidelity end-to-end tests, build the app
+> from a tiny real YAML with the model provider faked at strands-compose's
+> `resolve_model` seam (see the `library-development` skill); that runs real
+> `load` + `build_manifest`.
 
 ---
 
@@ -643,6 +691,7 @@ def test_short_session_ids_rejected(sid):
 | SSE line parsing | `client/` | nothing | `StreamEvent` or `None` |
 | error code translation | `client/` | nothing | exception type |
 | entry-agent run + faults | `server/` | `FakeEntry` (gate/raise) | error event present, queue closed |
+| session teardown | `server/` | `Mock(spec=Agent)` | `cleanup()` called per agent, failures survived |
 | app streaming / caching / locking | `server/` (integration) | `resolve_session` | lifecycle order, error-event on failure |
 | LocalClient invoke | `client/` | fake `urlopen` response | yielded events, noise filtered |
 | AsyncLocalClient invoke / connect error | `client/` | `httpx.MockTransport` | yielded events / `ClientConnectionError` |

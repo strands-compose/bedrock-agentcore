@@ -10,6 +10,8 @@ set windows-shell := ["powershell.exe", "-NoLogo", "-Command"]
 PACKAGE    := "strands-compose-agentcore"
 SOURCES    := "src/strands_compose_agentcore"
 TESTS      := "tests"
+EXAMPLES   := "examples"
+DOCS       := "docs README.md"
 
 # DEFAULTS
 

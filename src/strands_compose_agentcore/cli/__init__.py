@@ -140,7 +140,3 @@ def main(argv: list[str] | None = None) -> None:
     except CLIError as exc:
         print(f"\n{red()}{exc.message}{reset()}\n", file=sys.stderr)
         sys.exit(exc.code)
-
-
-if __name__ == "__main__":
-    main()

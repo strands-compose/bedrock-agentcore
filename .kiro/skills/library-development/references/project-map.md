@@ -10,12 +10,12 @@ single name.
 src/strands_compose_agentcore/
 ├── __init__.py          # PUBLIC API -- create_app, clients, media builders, types, exceptions
 ├── app.py               # BedrockAgentCoreApp factory, ASGI lifespan, /invocations entrypoint
-├── session.py           # SessionState dataclass, resolve_session(), run_entry_agent()
+├── session.py           # SessionState dataclass, resolve_session(), close_session(), run_entry_agent()
 ├── payload.py           # Server-side payload parser: validates prompt, decodes media, limits
 ├── types.py             # Public types: ContentBlock union, AgentInput, exception hierarchy, RetryConfig
 ├── media.py             # Client-side content block builders: text(), image(), document(), reply()
 ├── media_formats.py     # Canonical MediaFormatSpec registry (MEDIA_FORMATS tuple -- single source of truth)
-├── _utils.py            # Internal: ansi(), validate_session_id(), error_event(), prepare_app_state()
+├── _utils.py            # Internal: ansi(), validate_session_id(), error_event()
 ├── py.typed             # PEP 561 marker
 ├── client/
 │   ├── __init__.py      # Re-exports: AgentCoreClient, LocalClient, AsyncLocalClient, exceptions
@@ -36,7 +36,7 @@ src/strands_compose_agentcore/
 |------|------------------|
 | Understand the whole flow | `app.py` (factory + entrypoint) then `session.py` (lifecycle) |
 | Add/change payload validation | `payload.py` -- self-contained, all parsing lives here |
-| Session lifecycle or caching | `session.py` -- `resolve_session`, `run_entry_agent`, `SessionState` |
+| Session lifecycle or caching | `session.py` -- `resolve_session`, `close_session`, `run_entry_agent`, `SessionState` |
 | New media format support | `media_formats.py` (add `MediaFormatSpec`) -- everything derives from it |
 | Client-side media builders | `media.py` -- `text()`, `image()`, `document()`, `reply()` |
 | New client transport | `client/local.py` or `client/agentcore.py` (pick closest pattern) |
@@ -54,10 +54,20 @@ src/strands_compose_agentcore/
 
 Intended design law:
 
-- **Two-phase resolution.** `resolve_infra` once at boot (models, MCP);
-  `resolve_session` lazily on first invocation with the session ID from the
-  AgentCore header. Session is cached and reused until a new session ID arrives.
-  Never store agents/session managers on `ResolvedInfra`.
+- **Config at boot, session on first invocation.** `create_app` calls
+  `load_config` once (or accepts a pre-built `AppConfig`); `resolve_session` calls
+  `load(app_config, session_id=…)` on the first request, once the session ID from
+  the AgentCore header is known. The session is cached and reused until a new
+  session ID arrives. Nothing live is built in the factory or the lifespan.
+- **The session manifest is built once.** `resolve_session` stores it on
+  `SessionState`; the entrypoint re-emits it with SESSION_START on every turn.
+- **A replaced session is always closed.** The entrypoint calls `close_session`
+  before swapping in a new one: `Agent.cleanup()` on every agent (and on delegate
+  orchestrations, which are Agents) stops their MCP clients immediately. A
+  delegated agent lives in an agent-as-tool reference cycle, so refcounting
+  cannot reap it and its `command:` subprocess would survive until an arbitrary
+  cyclic-GC pass. The lifespan has no teardown — process exit reaps the
+  subprocess by itself.
 - **Single-flight by design.** One invocation at a time per pod. Concurrent
   single-tenant invocations are rejected on purpose; multi-tenant concurrency is
   out of scope (AgentCore's microVM handles isolation). The invocation lock
@@ -67,8 +77,9 @@ Intended design law:
 - **Deliberate lockstep coupling with strands-compose.** Its types
   (`StreamEvent`, `ResolvedConfig`, `EventQueue`) are trusted, re-exported
   unchanged, and never wrapped or re-versioned. Upstream breaking changes are
-  fixed here in the same release train, not shimmed. Only `startup.validate_mcp`
-  and `manifest.build_manifest` are sanctioned deep imports.
+  fixed here in the same release train, not shimmed. The only sanctioned deep
+  imports are `manifest.build_manifest` and `types.SessionManifest`, both confined
+  to `session.py`.
 - **`MEDIA_FORMATS` is the sole format source of truth.** `IMAGE_FORMATS`,
   `DOCUMENT_FORMATS`, and the extension maps all derive from it. Add a format in
   one place only.
@@ -125,7 +136,7 @@ lockstep with strands-compose rather than shielding callers from it.
 
 | Package | Role |
 |---------|------|
-| `strands-compose` (>=0.9.0,<1.0.0) | Config parsing, resolution, streaming, rendering |
+| `strands-compose` (>=0.10.0,<1.0.0) | Config parsing, resolution, streaming, rendering |
 | `bedrock-agentcore` (>=1.6.1) | `BedrockAgentCoreApp`, `BedrockAgentCoreContext` |
 | `httpx` (>=0.27.0) | `AsyncLocalClient` transport |
 | `boto3` (transitive via bedrock-agentcore) | `AgentCoreClient` AWS calls |

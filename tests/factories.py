@@ -10,6 +10,9 @@ from __future__ import annotations
 import base64
 from typing import Any
 
+from strands_compose import AppConfig, load_config
+from strands_compose.types import EntryDescriptor, SessionManifest
+
 # Standard limit kwargs for parse_payload.  Override only what a test cares
 # about via ``{**LIMITS, "max_payload_bytes": 10}``.
 LIMITS: dict[str, Any] = {
@@ -73,3 +76,15 @@ def reply_payload(
 def text_block_payload(text: str = "Hello world") -> dict[str, Any]:
     """A payload containing one text block."""
     return {"prompt": [{"text": text}]}
+
+
+def minimal_app_config() -> AppConfig:
+    """The smallest config that validates -- one agent, no model, no MCP."""
+    return load_config("agents:\n  helper:\n    system_prompt: hi\nentry: helper\n")
+
+
+def minimal_manifest() -> SessionManifest:
+    """A real, empty SessionManifest -- enough for emit_session_start."""
+    return SessionManifest(
+        agents=[], orchestrations=[], entry=EntryDescriptor(name="entry", kind="agent")
+    )
