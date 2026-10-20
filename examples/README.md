@@ -11,12 +11,12 @@ Three examples that walk you from local prototyping to production deployment.
 ## Prerequisites
 
 - AWS credentials configured (`aws configure` or environment variables)
-- Bedrock model access enabled in the [Bedrock console](https://console.aws.amazon.com/bedrock/)
+- [Access to your Bedrock model](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html) — most models are enabled on first use; Anthropic models need a one-time use-case form
 - Dependencies installed: `pip install strands-compose-agentcore`
 
 Update `model_id` in each `config.yaml` to match your Bedrock model availability.
 
-**For deployment (example 02):** The [`agentcore` CLI](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-cli.html) is a Node.js tool provided by AWS — install it with `npm install -g @aws/agentcore` (requires Node.js 20+).
+**For deployment (example 02):** The [`agentcore` CLI](https://github.com/aws/agentcore-cli) is a Node.js tool provided by AWS — install it with `npm install -g @aws/agentcore` (requires Node.js 20+).
 
 ## Quick start
 

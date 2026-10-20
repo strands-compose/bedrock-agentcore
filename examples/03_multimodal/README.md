@@ -15,7 +15,7 @@
 
 | File | Purpose |
 |------|---------|
-| `config.yaml` | One vision-capable agent (Claude Sonnet) |
+| `config.yaml` | One vision-capable agent (Claude Haiku) |
 | `main.py` | Entry script — wraps the config as a `BedrockAgentCoreApp` |
 | `client.py` | Sends `[image(...), text(...), document(...)]` to the local server |
 

@@ -6,8 +6,8 @@ Usage (local dev):
 Usage (standalone):
     python examples/02_deploy/main.py
 
-The module-level ``app`` variable is what AgentCore Runtime discovers
-at deploy time. The ``if __name__`` block lets you run the server locally.
+AgentCore Runtime runs this file as a script, so the ``if __name__``
+block starts the server both locally and in the deployed runtime.
 """
 
 from pathlib import Path
