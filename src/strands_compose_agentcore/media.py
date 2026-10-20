@@ -59,15 +59,12 @@ def image(source: str | Path | bytes, *, format: ImageFormat | None = None) -> I
         extension_map=_IMAGE_EXTENSIONS,
         allowed=IMAGE_FORMATS,
     )
-    return cast(
-        ImageBlock,
-        {
-            "image": {
-                "format": cast(ImageFormat, resolved_format),
-                "source": _encoded_source(payload),
-            }
-        },
-    )
+    return {
+        "image": {
+            "format": cast(ImageFormat, resolved_format),
+            "source": _encoded_source(payload),
+        }
+    }
 
 
 def document(
@@ -111,16 +108,13 @@ def document(
         resolved_name = None
     if not resolved_name:
         raise ValueError("document name must not be empty; pass name= explicitly")
-    return cast(
-        DocumentBlock,
-        {
-            "document": {
-                "format": cast(DocumentFormat, resolved_format),
-                "name": resolved_name,
-                "source": _encoded_source(payload),
-            }
-        },
-    )
+    return {
+        "document": {
+            "format": cast(DocumentFormat, resolved_format),
+            "name": resolved_name,
+            "source": _encoded_source(payload),
+        }
+    }
 
 
 def reply(interrupt_id: str, response: Any) -> ReplyBlock:

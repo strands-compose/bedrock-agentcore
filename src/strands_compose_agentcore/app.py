@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
@@ -55,7 +55,7 @@ def _make_lifespan(app_config: AppConfig) -> StatelessLifespan[BedrockAgentCoreA
     """
 
     @asynccontextmanager
-    async def _lifespan(app: BedrockAgentCoreApp) -> AsyncIterator[None]:
+    async def _lifespan(app: BedrockAgentCoreApp) -> AsyncGenerator[None]:
         app.state.app_config = app_config
         app.state.session = None  # lazily populated on first invoke
 
