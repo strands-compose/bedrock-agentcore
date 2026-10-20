@@ -24,7 +24,7 @@ Starts an HTTP server and an interactive REPL in the same terminal — the faste
 sca dev
 sca dev --config path/to/config.yaml
 sca dev --port 9090
-sca dev --session-id my-session
+sca dev --session-id my-session-id-at-least-33-characters-long
 ```
 
 The command creates the ASGI app with CORS enabled (`["*"]`) and the JSON log handler suppressed, then launches the server in a daemon thread and polls `GET /ping` (every 0.5 seconds, up to 30 seconds) until the server is healthy. Once ready, it opens the interactive REPL using a `LocalClient` connected to the server's `/invocations` endpoint. The REPL uses `AnsiRenderer` from strands-compose for colored, typewriter-style streaming output.
@@ -33,9 +33,9 @@ Because the server runs in a daemon thread within the same process, exiting the 
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--config` | `./config.yaml` | Path to strands-compose YAML config |
+| `--config` | `./config.yaml` | Path to strands-compose YAML config; separate multiple files with `,` (e.g. `base.yaml,agents.yaml`) |
 | `--port` | `8080` | Port for the HTTP server |
-| `--session-id` | `default-session-strands-compose-agentcore` | Session ID for the REPL |
+| `--session-id` | `default-session-strands-compose-agentcore` | Session ID for the REPL (must be 33-256 chars; the server rejects others) |
 
 If the port is already in use, the command exits with an error message suggesting `--port <number>`.
 
@@ -54,7 +54,7 @@ Connect to a local server (started by `dev` or manually):
 ```bash
 sca client local
 sca client local --url http://localhost:9090/invocations
-sca client local --session-id test-session
+sca client local --session-id test-session-id-at-least-33-characters
 ```
 
 Under the hood, this creates a `LocalClient` — a sync HTTP client using `urllib` — and calls `.repl()`.
@@ -62,7 +62,7 @@ Under the hood, this creates a `LocalClient` — a sync HTTP client using `urlli
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--url` | `http://localhost:8080/invocations` | Server URL |
-| `--session-id` | `default-session-strands-compose-agentcore` | Session ID header value |
+| `--session-id` | `default-session-strands-compose-agentcore` | Session ID header value (must be 33-256 chars; the server rejects others) |
 
 ### `client remote`
 

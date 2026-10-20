@@ -15,6 +15,7 @@ Everything you need to know about deploying [strands-compose](https://github.com
 | [Chapter 07](Chapter_07.md) | The Client — `AgentCoreClient` and `LocalClient` API + integration patterns |
 | [Chapter 08](Chapter_08.md) | Advanced Topics — VPC, logging, timeouts, health checks, CDK |
 | [Chapter 09](Chapter_09.md) | Deployment Strategies — Individual developers vs enterprise teams |
+| [Chapter 10](Chapter_10.md) | Observability — Logs, traces, and token usage in CloudWatch with OpenTelemetry |
 | [Quick Recipes](Quick_Recipes.md) | AWS Tooling Reference — Services, tools, and packages at a glance |
 
 ## Reading Order

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
@@ -55,7 +55,7 @@ def _make_lifespan(app_config: AppConfig) -> StatelessLifespan[BedrockAgentCoreA
     """
 
     @asynccontextmanager
-    async def _lifespan(app: BedrockAgentCoreApp) -> AsyncIterator[None]:
+    async def _lifespan(app: BedrockAgentCoreApp) -> AsyncGenerator[None]:
         app.state.app_config = app_config
         app.state.session = None  # lazily populated on first invoke
 
@@ -89,10 +89,11 @@ def create_app(
         cors_origins: List of allowed CORS origins.
         suppress_runtime_logging: Remove the JSON log handler that
             ``BedrockAgentCoreApp`` installs on the
-            ``bedrock_agentcore.app`` logger.  Useful in local
-            development to avoid duplicate log lines.  In production
-            on AgentCore Runtime, leave this ``False`` so CloudWatch
-            receives structured JSON logs.
+            ``bedrock_agentcore.app`` logger and stop it propagating.
+            Useful in local development to avoid duplicate log lines.
+            In production on AgentCore Runtime, leave this ``False`` so
+            the runtime's request logs still reach the root logger
+            (and CloudWatch).
         invocation_timeout: Maximum seconds to wait for the agent to
             finish a single invocation.  ``None`` (the default) means
             no timeout — the agent runs until completion or failure.
@@ -109,7 +110,14 @@ def create_app(
     Returns:
         Configured BedrockAgentCoreApp ready to run.
     """
-    app_config = config if isinstance(config, AppConfig) else load_config(config)
+    if isinstance(config, AppConfig):
+        app_config = config
+    else:
+        app_config = load_config(config)
+        # Mirror strands-compose ``load()``: apply the YAML ``log_level`` only
+        # when this call parsed the config.  ``load()`` later receives the
+        # parsed AppConfig and therefore skips it.
+        logging.getLogger("strands_compose").setLevel(app_config.log_level.upper())
 
     app = BedrockAgentCoreApp(lifespan=_make_lifespan(app_config))
 
@@ -133,7 +141,8 @@ def create_app(
         Resolves the session on the first call and caches it; later calls with
         the same session ID reuse it. Concurrent invocations within a session
         are rejected with an error event, and ``/ping`` reports
-        ``HEALTHY_BUSY`` while an invocation runs so AgentCore Runtime backs off.
+        ``HealthyBusy`` while an invocation runs so AgentCore Runtime keeps the
+        session active.
 
         Args:
             payload: Request payload.  Must contain a ``prompt`` key
@@ -214,8 +223,8 @@ def create_app(
         session.events.emit_session_start(session.manifest)
 
         # Register the invocation as an active task so /ping returns
-        # HEALTHY_BUSY while the agent is running, signalling AgentCore
-        # Runtime to back off rather than send another request.
+        # HealthyBusy while the agent is running, so AgentCore Runtime
+        # treats the session as active and keeps it alive.
         task_id = app.add_async_task("invoke")
         try:
             async with session.invocation_lock:

@@ -19,7 +19,7 @@
 ## Prerequisites
 
 - AWS credentials configured (`aws configure` or environment variables)
-- Bedrock model access enabled in the [Bedrock console](https://console.aws.amazon.com/bedrock/)
+- [Access to your Bedrock model](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html) — most models are enabled on first use; Anthropic models need a one-time use-case form
 - Dependencies installed: `pip install strands-compose-agentcore`
 
 ## Run
@@ -50,16 +50,19 @@ coordinator  (entry via orchestration)
 
 The `coordinator` is the entry point. For every task it receives, it delegates to `researcher` to gather facts, then passes those to `writer` for the final output. All agent events stream back in real-time.
 
-`main.py` is a single function call:
+`main.py` is a single function call, plus the block that starts the server:
 
 ```python
 from pathlib import Path
 from strands_compose_agentcore import create_app
 
 app = create_app(Path(__file__).parent / "config.yaml")
+
+if __name__ == "__main__":
+    app.run(port=8080)
 ```
 
-The module-level `app` variable is what AgentCore Runtime discovers at deploy time.
+AgentCore Runtime runs this file as a script, so keep the `if __name__ == "__main__":` block — it starts the server in the deployed runtime too.
 
 ## Good to know
 

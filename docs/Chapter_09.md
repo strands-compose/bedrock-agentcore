@@ -16,6 +16,9 @@ from pathlib import Path
 from strands_compose_agentcore import create_app
 
 app = create_app(Path(__file__).parent / "config.yaml")
+
+if __name__ == "__main__":
+    app.run(port=8080)  # AgentCore Runtime runs main.py as a script — this starts the server
 ```
 
 This factory handles the AgentCore runtime contract — ASGI lifecycle, session management, event streaming, concurrency guards, health checks. You don't need to know how `BedrockAgentCoreApp` works, what headers AgentCore sends, or how SSE streaming is wired. The factory does it all.
@@ -28,7 +31,7 @@ Your deployment strategy only affects how this `main.py` + `config.yaml` + depen
 
 **Best for:** Solo developers, small teams, prototyping, hackathons, quick experiments.
 
-The [AgentCore CLI](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-cli.html) (`npm install -g @aws/agentcore`) is a Node.js tool that manages the full lifecycle: project scaffolding, agent registration, packaging (CodeZip or Container), deployment via CloudFormation, logs, and status.
+The [AgentCore CLI](https://github.com/aws/agentcore-cli) (`npm install -g @aws/agentcore`) is a Node.js tool that manages the full lifecycle: project scaffolding, agent registration, packaging (CodeZip or Container), deployment via CloudFormation, logs, and status.
 
 We recommend it for individual projects because it handles everything with minimal setup:
 
@@ -103,22 +106,24 @@ my-agent-system/
 **Dockerfile** (same as [Chapter 06 — Path C](Chapter_06.md#path-c--manual-container-deployment)):
 
 ```dockerfile
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
+FROM ghcr.io/astral-sh/uv:python3.12-trixie-slim AS builder
 WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 UV_NO_PROGRESS=1
 COPY pyproject.toml ./
-RUN uv sync --frozen --no-cache --no-dev --no-install-project
+RUN uv sync --no-cache --no-dev --no-install-project
 
-FROM python:3.12-slim-bookworm
+FROM python:3.12-slim-trixie
 WORKDIR /app
-ENV PYTHONUNBUFFERED=1 PATH="/app/.venv/bin:$PATH"
+ENV PYTHONUNBUFFERED=1 DOCKER_CONTAINER=1 PATH="/app/.venv/bin:$PATH"
 RUN useradd -m -u 1000 bedrock_agentcore
 COPY --from=builder /app/.venv /app/.venv
 COPY --chown=bedrock_agentcore:bedrock_agentcore . .
 USER bedrock_agentcore
 EXPOSE 8080
-CMD ["python", "main.py"]
+CMD ["opentelemetry-instrument", "python", "main.py"]
 ```
+
+`opentelemetry-instrument` only exports telemetry once `aws-opentelemetry-distro` is in `pyproject.toml` — see [Chapter 10](Chapter_10.md).
 
 **CI pipeline (GitHub Actions example):**
 
@@ -139,36 +144,48 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::role/deploy-role
+          role-to-assume: arn:aws:iam::123456789012:role/deploy-role
           aws-region: us-west-2
 
-      - uses: aws-actions/amazon-ecr-login@v2
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ubuntu-latest is x64 — QEMU + buildx are needed to build the ARM64 image
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
 
       - name: Build and push
         run: |
           docker buildx build --platform linux/arm64 \
-            -t ${{ env.ECR_REGISTRY }}/my-agent:${{ github.sha }} \
-            -t ${{ env.ECR_REGISTRY }}/my-agent:latest \
+            -t ${{ steps.ecr.outputs.registry }}/my-agent:${{ github.sha }} \
+            -t ${{ steps.ecr.outputs.registry }}/my-agent:latest \
             --push .
 
       - name: Update agent runtime
         run: |
-          aws bedrock-agentcore update-agent-runtime \
+          aws bedrock-agentcore-control update-agent-runtime \
             --agent-runtime-id $RUNTIME_ID \
             --agent-runtime-artifact \
-              "containerConfiguration={containerUri=$ECR_REGISTRY/my-agent:${{ github.sha }}}"
+              "containerConfiguration={containerUri=${{ steps.ecr.outputs.registry }}/my-agent:${{ github.sha }}}" \
+            --role-arn $RUNTIME_ROLE_ARN \
+            --network-configuration networkMode=PUBLIC
 ```
 
 **Terraform (infrastructure):**
 
 ```hcl
 resource "aws_bedrockagentcore_agent_runtime" "my_agent" {
-  agent_runtime_name = "my-agent"
+  agent_runtime_name = "my_agent" # letters, digits, underscores only
+  role_arn           = aws_iam_role.agent_runtime.arn # execution role trusted by bedrock-agentcore.amazonaws.com
 
   agent_runtime_artifact {
     container_configuration {
       container_uri = "${aws_ecr_repository.my_agent.repository_url}:latest"
     }
+  }
+
+  network_configuration {
+    network_mode = "PUBLIC"
   }
 }
 
@@ -186,10 +203,13 @@ If your team prefers CodeZip over containers (simpler, no Docker, 250 MB limit):
 **CI pipeline:**
 
 ```yaml
+- uses: astral-sh/setup-uv@v10.3.0
+
 - name: Package and upload
   run: |
-    # Install deps into staging directory
-    pip install --target staging/ -r pyproject.toml
+    # Install ARM64 Linux wheels into staging directory
+    uv pip install --python-platform aarch64-manylinux2014 --python-version 3.13 \
+      --target staging/ --only-binary :all: -r pyproject.toml
     cp main.py config.yaml staging/
 
     # Zip and upload to S3
@@ -198,10 +218,14 @@ If your team prefers CodeZip over containers (simpler, no Docker, 250 MB limit):
 
 - name: Update agent runtime
   run: |
-    aws bedrock-agentcore update-agent-runtime \
+    aws bedrock-agentcore-control update-agent-runtime \
       --agent-runtime-id $RUNTIME_ID \
-      --agent-runtime-artifact \
-        "s3Configuration={s3Uri=s3://my-deploy-bucket/my-agent/agent.zip}"
+      --agent-runtime-artifact '{"codeConfiguration": {
+          "code": {"s3": {"bucket": "my-deploy-bucket", "prefix": "my-agent/agent.zip"}},
+          "runtime": "PYTHON_3_13",
+          "entryPoint": ["opentelemetry-instrument", "main.py"]}}' \
+      --role-arn $RUNTIME_ROLE_ARN \
+      --network-configuration networkMode=PUBLIC
 ```
 
 Same pattern: CI packages and uploads; IaC manages the runtime resource.
@@ -255,7 +279,7 @@ We don't wrap, replace, or compete with the AgentCore CLI. We recommend it for d
 | Small team, simple agents | AgentCore CLI (Path A or B) |
 | Need custom system deps or large artifacts | AgentCore CLI with Container build (Path B) |
 | Existing IaC (Terraform, CDK) | Docker → ECR → IaC-managed runtime |
-| CI/CD pipeline already in place | Docker or CodeZip → S3 → pipeline-managed runtime |
+| CI/CD pipeline already in place | Docker → ECR or CodeZip → S3 → pipeline-managed runtime |
 | Multi-environment (dev/staging/prod) | IaC + CI/CD, different `config.yaml` per environment |
 | Regulated industry, audit requirements | IaC with state tracking + CI/CD with approval gates |
 
@@ -264,3 +288,7 @@ The `main.py` with `create_app()` is identical in every scenario. Only the packa
 ## Previous
 
 [Chapter 08 — Advanced Topics](Chapter_08.md)
+
+## Next
+
+[Chapter 10 — Observability](Chapter_10.md)

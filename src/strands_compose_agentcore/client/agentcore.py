@@ -312,8 +312,7 @@ class AgentCoreClient:
 
         Calls the AWS ``bedrock-agentcore.stop_runtime_session`` data-plane
         action.  AWS documents this as instantly terminating the specified
-        session and stopping any ongoing streaming responses.  Termination
-        can take up to 15 seconds for graceful shutdown.
+        session and stopping any ongoing streaming responses.
 
         Required IAM permission on the **calling principal**:
         ``bedrock-agentcore:StopRuntimeSession`` on the target runtime ARN.

@@ -72,7 +72,7 @@ Intended design law:
   single-tenant invocations are rejected on purpose; multi-tenant concurrency is
   out of scope (AgentCore's microVM handles isolation). The invocation lock
   enforces this in local dev where no microVM exists; `/ping` reports
-  `HEALTHY_BUSY` while locked. The busy-check → lock-acquire path has no `await`
+  `HealthyBusy` while locked. The busy-check → lock-acquire path has no `await`
   between it — preserve that.
 - **Deliberate lockstep coupling with strands-compose.** Its types
   (`StreamEvent`, `ResolvedConfig`, `EventQueue`) are trusted, re-exported

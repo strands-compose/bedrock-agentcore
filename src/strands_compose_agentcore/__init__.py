@@ -1,9 +1,9 @@
 """strands-compose-agentcore — toolkit for deploying strands-compose agents on AgentCore.
 
 Install this package and use :func:`create_app` to wrap a strands-compose
-YAML config as a ``BedrockAgentCoreApp``.  Assign the result to a
-module-level ``app`` in your entry script for ``agentcore deploy`` to
-discover, or call ``app.run()`` for local development.
+YAML config as a ``BedrockAgentCoreApp``, then call ``app.run()`` from
+your entry script.  AgentCore Runtime executes that script, so the same
+``app.run()`` starts the server locally and in production.
 
 Example::
 
@@ -11,6 +11,9 @@ Example::
     from strands_compose_agentcore import create_app
 
     app = create_app(Path(__file__).parent / "config.yaml")
+
+    if __name__ == "__main__":
+        app.run(port=8080)
 """
 
 from __future__ import annotations

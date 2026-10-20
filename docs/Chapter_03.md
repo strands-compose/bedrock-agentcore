@@ -32,9 +32,9 @@ def create_app(
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `config` | `str \| Path \| list \| AppConfig` | required | YAML file path, list of paths, or pre-built `AppConfig` |
+| `config` | `str \| Path \| list \| AppConfig` | required | YAML file path or inline YAML string, a list of either, or a pre-built `AppConfig` |
 | `cors_origins` | `list[str] \| None` | `None` | Allowed CORS origins. Set to `["*"]` for local dev |
-| `suppress_runtime_logging` | `bool` | `False` | Remove the JSON log handler on `bedrock_agentcore.app` logger |
+| `suppress_runtime_logging` | `bool` | `False` | Remove the JSON log handler on `bedrock_agentcore.app` logger and stop it propagating |
 | `invocation_timeout` | `float \| None` | `None` | Max seconds for a single invocation. `None` means no timeout |
 | `max_payload_bytes` | `int \| None` | 25 MiB | Max JSON-serialized request body size. `None` disables the check |
 | `max_media_bytes` | `int` | 20 MiB | Max decoded bytes for any single image or document block |
@@ -63,12 +63,12 @@ When you pass multiple YAML files, collection sections (`models`, `agents`, `mcp
 
 ### Return Value
 
-The factory returns a [`BedrockAgentCoreApp`](https://pypi.org/project/bedrock-agentcore/) instance — a [Starlette](https://www.starlette.io/)-based ASGI application with two endpoints:
+The factory returns a [`BedrockAgentCoreApp`](https://pypi.org/project/bedrock-agentcore/) instance — a [Starlette](https://starlette.dev/)-based ASGI application with two endpoints:
 
 - **`POST /invocations`** — agent invocations with SSE streaming response
-- **`GET /ping`** — health check (returns `HEALTHY` or `HEALTHY_BUSY`)
+- **`GET /ping`** — health check (returns `Healthy` or `HealthyBusy`)
 
-For local development, call `app.run(port=8080)` to start it with uvicorn. In production on AgentCore Runtime, the runtime imports your module and discovers the `app` variable directly — you never call `run()` yourself.
+For local development, call `app.run(port=8080)` to start it with uvicorn. AgentCore Runtime also runs your entry script as a program (for example `opentelemetry-instrument python main.py`), so keep the `if __name__ == "__main__": app.run()` block — it is what starts the server in production too.
 
 ## Config at Boot, Everything Live per Session
 
@@ -82,14 +82,14 @@ The factory separates *parsing* the config from *building* it. That follows from
 
 When the first `POST /invocations` request arrives, the app reads the session ID from the `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id` header and calls `load(app_config, session_id=...)` to build models, MCP clients, agents, orchestrations, and the entry point. An `EventQueue` is wired to all agents for streaming. This session state is cached — follow-up prompts within the same session reuse the same agents, preserving conversation history. Only the event queue is flushed between turns to discard stale events.
 
-If a request arrives with a *different* session ID while the server is idle, the old session is closed (`Agent.cleanup()` on each agent, releasing its MCP clients and any `command:` subprocess) and a fresh one is built. On AgentCore Runtime this is expected — each session gets its own microVM, so a different session ID means routing has changed.
+If a request arrives with a *different* session ID while the server is idle, the old session is closed (`Agent.cleanup()` on each agent, releasing its MCP clients and any `command:` subprocess) and a fresh one is built. On AgentCore Runtime this should not normally happen — each session gets its own dedicated microVM — so the switch mainly matters in local development, where one server handles every session ID.
 
 ## The `/invocations` Entrypoint
 
 Each request goes through this sequence:
 
 1. **Validate** — checks that the JSON payload contains a `prompt` key whose value is a string, a single content block, or a list of content blocks
-2. **Concurrency guard** — if an invocation is already in progress, rejects the request with an error event and reports `HEALTHY_BUSY` on `/ping` so AgentCore Runtime can back off
+2. **Concurrency guard** — if an invocation is already in progress, rejects the request with an `AgentBusy` error event; while an invocation runs, `/ping` reports `HealthyBusy`, which AgentCore Runtime treats as an active session
 3. **Resolve session** — builds every live object on the first call, reuses them on subsequent calls within the same session
 4. **Stream** — runs the entry agent asynchronously and yields `StreamEvent` dicts as Server-Sent Events
 
@@ -104,17 +104,19 @@ Send a JSON payload with a `prompt` field:
 The response is a stream of Server-Sent Events. Each line is a JSON-serialized `StreamEvent`:
 
 ```
+data: {"type": "session_start", "agent_name": "assistant", "timestamp": "...", "data": {...}}
 data: {"type": "token", "agent_name": "assistant", "timestamp": "...", "data": {"text": "Hello"}}
 data: {"type": "tool_start", "agent_name": "assistant", "timestamp": "...", "data": {...}}
 data: {"type": "tool_end", "agent_name": "assistant", "timestamp": "...", "data": {...}}
 data: {"type": "agent_complete", "agent_name": "assistant", "timestamp": "...", "data": {...}}
+data: {"type": "session_end", "agent_name": "assistant", "timestamp": "...", "data": {...}}
 ```
 
 ## CORS and Logging
 
 For local development with browser-based UIs, enable CORS by passing `cors_origins=["*"]`. The `dev` CLI command does this automatically.
 
-The `BedrockAgentCoreApp` installs a JSON-formatted `StreamHandler` on the `bedrock_agentcore.app` logger. In production on AgentCore Runtime, this produces structured logs that [CloudWatch](https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/) can parse and filter — leave it enabled. During local development, this JSON output is noisy, so pass `suppress_runtime_logging=True` to remove it. Again, the `dev` command handles this for you.
+The `BedrockAgentCoreApp` installs a JSON-formatted `StreamHandler` on the `bedrock_agentcore.app` logger. In production on AgentCore Runtime, leave it enabled: `suppress_runtime_logging=True` also stops the logger propagating, so its records would no longer reach the root logger that ships logs to CloudWatch (see [Chapter 10 — Observability](Chapter_10.md)). During local development, this JSON output is noisy, so pass `suppress_runtime_logging=True` to remove it. Again, the `dev` command handles this for you.
 
 ## Next
 

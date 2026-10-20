@@ -5,25 +5,25 @@
 This example walks through the complete deployment journey:
 create your agent files, test locally, deploy to AWS, and connect remotely.
 
-This directory contains the three files every deployable agent needs — use them as a starting point or reference.
+This directory contains the three files every deployable agent needs (plus a `Dockerfile` for the manual container path) — use them as a starting point or reference.
 
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `config.yaml` | Minimal strands-compose YAML config — one model, one agent |
-| `main.py` | Entry script — exposes a module-level `app` variable for AgentCore Runtime |
-| `pyproject.toml` | Python project file — declares `strands-compose-agentcore` as a dependency |
+| `main.py` | Entry script — builds the `app` and starts it with `app.run(port=8080)` |
+| `pyproject.toml` | Python project file — declares `strands-compose-agentcore` and `aws-opentelemetry-distro` (observability) as dependencies |
+| `Dockerfile` | Only for the manual container path — see [Chapter 06, Path C](../../docs/Chapter_06.md#path-c--manual-container-deployment) |
 
 ---
 
 ## Prerequisites
 
 - **AWS credentials** configured (`aws configure` or environment variables)
-- **Bedrock model access** enabled in the [Bedrock console](https://console.aws.amazon.com/bedrock/)
+- **[Bedrock model access](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html)** — most models are enabled on first use; Anthropic models need a one-time use-case form
 - **AgentCore CLI** installed: `npm install -g @aws/agentcore` (requires Node.js 20+)
-  — see [AgentCore CLI docs](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-cli.html)
-  and [AgentCore CLI GitHub](https://github.com/aws/agentcore-cli)
+  — see [AgentCore CLI GitHub](https://github.com/aws/agentcore-cli)
 - **strands-compose-agentcore** installed: `pip install strands-compose-agentcore`
 
 ---
@@ -52,7 +52,7 @@ project/
 |------|---------|
 | `--name <name>` | Project name (alphanumeric, max 23 chars) |
 | `--no-agent` | Skip the interactive agent wizard — we add our own |
-| `--build <type>` | `CodeZip` (default) or `Container` |
+| `--skip-git` | Skip git initialization |
 
 > For full `agentcore create` options, see the [AgentCore CLI reference](https://github.com/aws/agentcore-cli/blob/main/docs/commands.md).
 
@@ -105,14 +105,15 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "strands-compose-agentcore",
+    "aws-opentelemetry-distro>=0.21.0",
 ]
 ```
 
 **What each file does:**
 
 - **`config.yaml`** — defines your agents, tools, and orchestrations. All YAML options are defined by [strands-compose](https://github.com/strands-compose/sdk-python).
-- **`main.py`** — calls `create_app(config.yaml)` and exposes a module-level `app` variable.
-- **`pyproject.toml`** — declares `strands-compose-agentcore` as a dependency. The AgentCore CLI reads this to install dependencies during staging.
+- **`main.py`** — calls `create_app(config.yaml)` and starts the server with `app.run(port=8080)`. AgentCore Runtime runs this file as a script, so keep the `if __name__ == "__main__":` block.
+- **`pyproject.toml`** — declares `strands-compose-agentcore` as a dependency. The AgentCore CLI reads this to install dependencies during staging. `aws-opentelemetry-distro` sends logs and traces to CloudWatch — without it nothing is exported (see [Chapter 10 (Observability)](../../docs/Chapter_10.md)).
 
 After this step your project should look like this:
 
@@ -136,7 +137,6 @@ Edit `config.yaml` to define your agents. See [01_quick_start](../01_quick_start
 Run the dev server and REPL:
 
 ```bash
-cd ..
 # Your cwd should be project/
 sca dev --config ./my_agent/config.yaml
 ```
@@ -149,7 +149,7 @@ This starts an HTTP server on port 8080 and opens an interactive REPL. Test your
 |------|---------|---------|
 | `--config <path>` | `./config.yaml` | Path to strands-compose YAML config |
 | `--port <number>` | `8080` | HTTP server port |
-| `--session-id <id>` | auto-generated | Session ID for the REPL |
+| `--session-id <id>` | `default-session-strands-compose-agentcore` | Session ID for the REPL |
 
 > **Tip:** The dev server runs the exact same `BedrockAgentCoreApp` that will run in production. What works locally will work deployed.
 
@@ -179,16 +179,16 @@ This updates `agentcore/agentcore.json` with the agent configuration.
 
 - `--type byo` — **bring-your-own** runtime. The agent is fully self-contained; AgentCore Runtime just invokes it.
 - `--language`, `--framework`, `--model-provider` — **required by the CLI for `byo` type, but not used at runtime.** For `byo` agents the runtime doesn't enforce a particular language or framework — you own the entire execution. These flags are a CLI validation artefact and may become optional in a future release.
-- `--entrypoint main.py` — the file AgentCore Runtime loads to find the `app` variable. `main.py` is the CLI default and the convention we follow here, but you can use any filename as long as you pass the correct value to `--entrypoint`.
+- `--entrypoint main.py` — the file AgentCore Runtime runs (wrapped with `opentelemetry-instrument`). `main.py` is the CLI default and the convention we follow here, but you can use any filename as long as you pass the correct value to `--entrypoint`.
 
 **Useful extras:**
 
 | Flag | Purpose |
 |------|---------|
-| `--build <type>` | `CodeZip` (default, up to 250 MB) or `Container` |
+| `--build <type>` | `CodeZip` (default, up to 250 MB zipped) or `Container` (needs your own `Dockerfile` — see the one in this folder) |
 | `--network-mode <mode>` | `PUBLIC` (default) or `VPC` |
 | `--idle-timeout <seconds>` | Session idle timeout (60–28800, default: 900) |
-| `--max-lifetime <seconds>` | Max session lifetime (60–28800) |
+| `--max-lifetime <seconds>` | Max instance lifetime (60–28800, default: 28800) |
 
 ### Deploy
 
@@ -208,12 +208,12 @@ On the first deploy, the CLI:
 Subsequent deploys:
 
 ```bash
-agentcore deploy -y       # auto-confirm (skip interactive prompts)
-agentcore deploy --plan   # preview changes without deploying
-agentcore deploy -y -v    # auto-confirm with verbose output
+agentcore deploy -y          # auto-confirm (skip interactive prompts)
+agentcore deploy --dry-run   # preview changes without deploying
+agentcore deploy -y -v       # auto-confirm with verbose output
 ```
 
-> **CI/scripted workflows:** The `-y` flag requires `aws-targets.json` to exist. Either run an interactive deploy first, or create it manually:
+> **CI/scripted workflows:** With `-y`, an empty `aws-targets.json` gets a `default` target from your detected AWS account and region. If detection fails, create it manually:
 > ```json
 > [{"name": "default", "account": "123456789012", "region": "us-west-2"}]
 > ```
@@ -236,7 +236,7 @@ sca client remote \
   --region us-west-2
 ```
 
-> **Tip:** The ARN follows the pattern `{project}_{agent}-{randomSuffix}`. Get it from `agentcore status` output.
+> **Tip:** The ARN ends in `runtime/{project}_{agent}-{randomSuffix}`. Get it from `agentcore status` output.
 
 ### Other useful commands
 
@@ -244,7 +244,7 @@ sca client remote \
 # View logs
 agentcore logs --since 30m
 
-# Remove all agents (marks for removal on next deploy)
+# Remove all resources from the project (applied to AWS on next deploy)
 agentcore remove all
 agentcore deploy -y
 ```
@@ -289,4 +289,4 @@ sca client remote --arn <ARN> --region <REGION>
 
 For client integration patterns (Python client, CLI REPL, FastAPI), see [Chapter 07 (The Client)](../../docs/Chapter_07.md). To stop a running session from outside the pod, see [`stop_session`](../../docs/Chapter_07.md#stop_session).
 
-For advanced deployment topics (VPC, containers, CDK customization, observability), see the [docs](../../docs/README.md) — specifically [Chapter 06 (Deployment)](../../docs/Chapter_06.md) and [Chapter 08 (Advanced Topics)](../../docs/Chapter_08.md).
+For advanced deployment topics (VPC, containers, CDK customization), see the [docs](../../docs/README.md) — specifically [Chapter 06 (Deployment)](../../docs/Chapter_06.md) and [Chapter 08 (Advanced Topics)](../../docs/Chapter_08.md). For logs and traces in CloudWatch, see [Chapter 10 (Observability)](../../docs/Chapter_10.md).
