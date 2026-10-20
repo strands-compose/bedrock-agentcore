@@ -7,11 +7,15 @@ These drive the real ASGI app and fake strands-compose at our own
 from __future__ import annotations
 
 import json
+import logging
+from collections.abc import Iterator
 from typing import Any
 from unittest.mock import patch
 
 import pytest
 
+from strands_compose_agentcore.app import create_app
+from tests.factories import minimal_app_config
 from tests.fakes.compose import FakeEntry, FakeResolvedConfig, FakeSessionState
 
 _HEADER = "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id"
@@ -157,3 +161,28 @@ class TestInvocationsSessionCaching:
             test_client.post("/invocations", json={"prompt": "2"}, headers={_HEADER: "b" * 40})
 
         mock_close.assert_called_once_with(sessions[0])
+
+
+@pytest.fixture()
+def strands_compose_logger() -> Iterator[logging.Logger]:
+    """Yield the ``strands_compose`` logger and restore its level afterwards."""
+    log = logging.getLogger("strands_compose")
+    original = log.level
+    yield log
+    log.setLevel(original)
+
+
+class TestCreateAppLogLevel:
+    """The YAML ``log_level`` takes effect when ``create_app`` parses the config."""
+
+    def test_parsed_yaml_applies_log_level(self, strands_compose_logger) -> None:
+        create_app("log_level: DEBUG\nagents:\n  helper:\n    system_prompt: hi\nentry: helper\n")
+
+        assert strands_compose_logger.level == logging.DEBUG
+
+    def test_prebuilt_app_config_leaves_log_level_untouched(self, strands_compose_logger) -> None:
+        strands_compose_logger.setLevel(logging.ERROR)
+
+        create_app(minimal_app_config())
+
+        assert strands_compose_logger.level == logging.ERROR

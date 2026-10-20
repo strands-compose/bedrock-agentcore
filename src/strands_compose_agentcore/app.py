@@ -109,7 +109,14 @@ def create_app(
     Returns:
         Configured BedrockAgentCoreApp ready to run.
     """
-    app_config = config if isinstance(config, AppConfig) else load_config(config)
+    if isinstance(config, AppConfig):
+        app_config = config
+    else:
+        app_config = load_config(config)
+        # Mirror strands-compose ``load()``: apply the YAML ``log_level`` only
+        # when this call parsed the config.  ``load()`` later receives the
+        # parsed AppConfig and therefore skips it.
+        logging.getLogger("strands_compose").setLevel(app_config.log_level.upper())
 
     app = BedrockAgentCoreApp(lifespan=_make_lifespan(app_config))
 
