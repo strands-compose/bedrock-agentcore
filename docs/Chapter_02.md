@@ -14,7 +14,7 @@ If you plan to deploy to AWS (rather than just running locally), you also need t
 npm install -g @aws/agentcore
 ```
 
-> See the [AgentCore CLI installation docs](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-cli.html) for prerequisites.
+> See the [AgentCore CLI README](https://github.com/aws/agentcore-cli) for prerequisites.
 
 ## AWS Credentials
 
@@ -32,7 +32,7 @@ export AWS_SECRET_ACCESS_KEY=...
 export AWS_DEFAULT_REGION=us-west-2
 ```
 
-Make sure the Bedrock model you reference in `config.yaml` is enabled in your account. Check the [Bedrock model access page](https://console.aws.amazon.com/bedrock/home#/modelaccess) in the AWS console. For available model IDs, see [Supported models](https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html).
+Most Bedrock models are enabled automatically on first use in commercial Regions; Anthropic models need a one-time use-case form first — see [Access Amazon Bedrock foundation models](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html). For available model IDs, see [Supported models](https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html).
 
 ## Write a Config
 
@@ -52,7 +52,7 @@ agents:
 entry: assistant
 ```
 
-This defines one model and one agent. The `entry` field specifies which agent handles incoming requests. All YAML config options are defined by strands-compose — see the [strands-compose documentation](https://github.com/strands-compose/sdk-python) for the full reference.
+This defines one model and one agent. The `entry` field specifies which agent (or orchestration) handles incoming requests. All YAML config options are defined by strands-compose — see the [strands-compose documentation](https://github.com/strands-compose/sdk-python) for the full reference.
 
 ## Run Locally
 

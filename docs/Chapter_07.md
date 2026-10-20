@@ -31,13 +31,14 @@ for event in client.invoke("Hello"):
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `url` | `str` | `http://localhost:8080/invocations` | URL of the `/invocations` endpoint |
-| `session_id` | `str \| None` | `DEFAULT_SESSION_ID` | Session ID sent in the AgentCore header |
+| `session_id` | `str \| None` | `DEFAULT_SESSION_ID` | Session ID sent in the AgentCore header (the server rejects IDs outside 33–256 chars) |
+| `timeout` | `float \| None` | `None` | Socket timeout per read (bounds silence between SSE lines, not total run time). `None` waits indefinitely |
 
 The `invoke()` method is a generator that yields `StreamEvent` objects by default. Pass `raw_output=True` to yield raw SSE lines (`str`) instead — useful when forwarding the stream verbatim (e.g. SSE proxies). Pass `session_id` to override the default for a single call. Raises `ClientConnectionError` if the server is unreachable.
 
 ```python
 client.repl()  # interactive REPL with colored streaming
-client.repl(session_id="custom")  # override session ID
+client.repl(session_id="custom-session-id-at-least-33-chars")  # override session ID
 ```
 
 `LocalClient` supports the `with` statement. The client does not hold persistent connections, so the context manager exists for structural consistency:
@@ -115,7 +116,7 @@ await client.aclose()  # from async context
 
 ```python
 client.repl()  # interactive REPL
-client.repl(session_id="custom")
+client.repl(session_id="custom-session-id-at-least-33-chars")
 ```
 
 ---
@@ -148,7 +149,7 @@ async for event in client.invoke(
 | `session` | `boto3.Session \| None` | `None` | Pre-configured boto3 session |
 | `timeout` | `float \| None` | `None` | Socket read timeout in seconds |
 | `max_concurrent_streams` | `int` | `64` | Max concurrent `invoke()` calls |
-| `retry` | `RetryConfig \| None` | `None` | Retry config for throttled requests. `None` disables retry. Pass `RetryConfig()` for sensible defaults |
+| `retry` | `RetryConfig \| None` | `None` | Retry config for throttled and retryable-conflict (409) `invoke()` requests. `None` disables retry. Pass `RetryConfig()` for sensible defaults |
 
 ### Session ID Requirements
 
@@ -160,20 +161,26 @@ AgentCore requires session IDs of 33–256 characters. The `AgentCoreClient` enf
 |-----------|------|---------|-------------|
 | `agent_input` | `str \| ContentBlock \| list[ContentBlock]` | required | User turn: plain string, one content block, or a list of blocks |
 | `session_id` | `str` | required (keyword-only) | AgentCore session ID (33-256 chars) |
+| `raw_output` | `bool` | `False` | When `True`, yield raw SSE lines (`str`) instead of `StreamEvent` objects |
 
-Returns an `AsyncGenerator[StreamEvent, None]`.
+Returns an `AsyncGenerator[StreamEvent \| str, None]`.
 
 ### Errors
 
 | Exception | Cause |
 |-----------|-------|
-| `ValueError` | Session ID shorter than 33 or longer than 256 characters |
-| `ClientConnectionError` | Cannot reach the agent server (local or remote) |
+| `ValueError` | Session ID shorter than 33 or longer than 256 characters, or unsupported `agent_input` shape |
 | `AccessDeniedError` | Credentials lack `bedrock-agentcore:InvokeAgentRuntime` permission |
 | `ThrottledError` | Request was rate-limited |
+| `RetryableConflictError` | Session was being provisioned or torn down (HTTP 409); retry with backoff |
+| `InvalidRequestError` | `ValidationException` — request failed service-side validation |
+| `SessionNotFoundError` | `ResourceNotFoundException` — e.g. the runtime ARN does not exist |
 | `AgentCoreClientError` | Any other service error |
+| `OSError` | Response stream failed mid-way; events yielded before the failure are still delivered |
 
-All client exceptions inherit from `AgentCoreClientError`:
+`ClientConnectionError` (server unreachable) is raised by `LocalClient` and `AsyncLocalClient` only.
+
+All typed client exceptions inherit from `AgentCoreClientError`:
 
 ```python
 from strands_compose_agentcore import (
@@ -203,7 +210,7 @@ When you call `client.invoke(...)`, the request travels through the following ch
 
 **HTTP client → AgentCore Runtime control plane → microVM pod → asyncio event loop → strands entry agent**
 
-The [AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-overview.html) control plane routes each request to the microVM pod assigned to the session, where the strands entry agent runs inside an asyncio event loop. The control plane acts as a one-way bridge: it forwards the request into the pod but does **not** propagate a client TCP disconnect back into the pod. If the HTTP client closes the connection mid-stream (browser tab closed, proxy timeout, `aclose()` on the generator), the agent inside the pod continues running to completion, S3 session state is fully persisted, and `/ping` reports `HEALTHY_BUSY` until the agent finishes.
+The [AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agents-tools-runtime.html) control plane routes each request to the microVM pod assigned to the session, where the strands entry agent runs inside an asyncio event loop. The control plane acts as a one-way bridge: it forwards the request into the pod but does **not** propagate a client TCP disconnect back into the pod. If the HTTP client closes the connection mid-stream (browser tab closed, proxy timeout, `aclose()` on the generator), the agent inside the pod continues running to completion, S3 session state is fully persisted, and `/ping` reports `HealthyBusy` until the agent finishes.
 
 This means local asyncio cancellation machinery (the `task.cancel()` path in `invoke`) is dead code under the AgentCore Runtime disconnect path — the worker loop never sees the consumer-side abort.
 
@@ -250,11 +257,11 @@ Returns a `StopSessionResult` with `runtime_session_id: str` and `status_code: i
 
 #### Graceful shutdown timing
 
-AWS documents that termination can take [up to 15 seconds for graceful shutdown](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-stop-session.html). The `stop_session()` call returns as soon as the [StopRuntimeSession](https://docs.aws.amazon.com/bedrock-agentcore/latest/APIReference/API_StopRuntimeSession.html) API accepts the request — the session may still be winding down for a short window after the call returns. If you need to confirm the session is fully gone before proceeding, poll the session status or wait for the in-flight `invoke()` stream to end.
+AWS documents that session termination [can last up to 15 seconds due to logging and other process completion](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-lifecycle-settings.html) (stated for idle-timeout and max-lifetime termination). The `stop_session()` call returns as soon as the [StopRuntimeSession](https://docs.aws.amazon.com/bedrock-agentcore/latest/APIReference/API_StopRuntimeSession.html) API accepts the request — the session may still be winding down for a short window after the call returns. There is no AWS API to query a runtime session's status, so if you need to confirm the session is fully gone before proceeding, wait for the in-flight `invoke()` stream to end.
 
 #### Idempotency
 
-Re-using the same `client_token` for the same session and ARN returns success without re-acting — boto3 handles this transparently and `stop_session()` returns a `StopSessionResult` reflecting the original successful response. If the session has already been terminated, AWS returns `ResourceNotFoundException`, which surfaces as `SessionNotFoundError`. Treat `SessionNotFoundError` as "already stopped, no further action needed":
+Re-using the same `client_token` returns the same response without re-acting — AWS documents that "if you use the same token with multiple requests, the same response is returned", so `stop_session()` returns a `StopSessionResult` reflecting the original successful response. If the session has already been terminated, AWS returns `ResourceNotFoundException`, which surfaces as `SessionNotFoundError`. Treat `SessionNotFoundError` as "already stopped, no further action needed":
 
 ```python
 from strands_compose_agentcore import SessionNotFoundError
@@ -405,7 +412,7 @@ client = AgentCoreClient(ARN, region="us-west-2")
 async def process_prompt(session_id: str, prompt: str) -> list:
     events = []
     async for event in client.invoke(prompt, session_id=session_id):
-        if event.type == "text":
+        if event.type == "token":
             events.append(event.data.get("text", ""))
     return events
 

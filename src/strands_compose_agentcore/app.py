@@ -89,10 +89,11 @@ def create_app(
         cors_origins: List of allowed CORS origins.
         suppress_runtime_logging: Remove the JSON log handler that
             ``BedrockAgentCoreApp`` installs on the
-            ``bedrock_agentcore.app`` logger.  Useful in local
-            development to avoid duplicate log lines.  In production
-            on AgentCore Runtime, leave this ``False`` so CloudWatch
-            receives structured JSON logs.
+            ``bedrock_agentcore.app`` logger and stop it propagating.
+            Useful in local development to avoid duplicate log lines.
+            In production on AgentCore Runtime, leave this ``False`` so
+            the runtime's request logs still reach the root logger
+            (and CloudWatch).
         invocation_timeout: Maximum seconds to wait for the agent to
             finish a single invocation.  ``None`` (the default) means
             no timeout — the agent runs until completion or failure.
@@ -140,7 +141,8 @@ def create_app(
         Resolves the session on the first call and caches it; later calls with
         the same session ID reuse it. Concurrent invocations within a session
         are rejected with an error event, and ``/ping`` reports
-        ``HEALTHY_BUSY`` while an invocation runs so AgentCore Runtime backs off.
+        ``HealthyBusy`` while an invocation runs so AgentCore Runtime keeps the
+        session active.
 
         Args:
             payload: Request payload.  Must contain a ``prompt`` key
@@ -221,8 +223,8 @@ def create_app(
         session.events.emit_session_start(session.manifest)
 
         # Register the invocation as an active task so /ping returns
-        # HEALTHY_BUSY while the agent is running, signalling AgentCore
-        # Runtime to back off rather than send another request.
+        # HealthyBusy while the agent is running, so AgentCore Runtime
+        # treats the session as active and keeps it alive.
         task_id = app.add_async_task("invoke")
         try:
             async with session.invocation_lock:

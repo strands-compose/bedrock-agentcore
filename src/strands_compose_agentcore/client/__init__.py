@@ -1,13 +1,15 @@
 """Client modules for invoking strands-compose-agentcore agents.
 
-Two clients for different use cases:
+Three clients for different use cases:
 
 - :class:`AgentCoreClient` — async boto3 wrapper for invoking **deployed**
   agents on AgentCore Runtime.  Safe for multi-tenant async code.
 - :class:`LocalClient` — sync HTTP client for invoking a **local** server
   during development.  Zero extra deps, real-time SSE streaming.
+- :class:`AsyncLocalClient` — async ``httpx`` client for a **local** server,
+  for async web servers and test suites.
 
-Both clients yield :class:`~strands_compose.StreamEvent` objects and
+All clients yield :class:`~strands_compose.StreamEvent` objects and
 provide a :meth:`repl` method for interactive terminal use with
 :class:`~strands_compose.AnsiRenderer`.
 """

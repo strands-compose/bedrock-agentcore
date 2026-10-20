@@ -37,6 +37,9 @@ from pathlib import Path
 from strands_compose_agentcore import create_app
 
 app = create_app(Path(__file__).parent / "config.yaml")
+
+if __name__ == "__main__":
+    app.run(port=8080)
 ```
 
 **Run locally** — dev server + interactive REPL in one terminal:
@@ -83,7 +86,7 @@ Without this factory, you'd need to manually wire `load_config`, per-session `lo
 
 ### 🛠️ CLI for strands-compose streaming events
 
-The [AgentCore CLI](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-cli.html) provides `create`, `add`, `deploy`, `status`, `logs`, and more — we recommend it and don't replace or abstract any of it.
+The [AgentCore CLI](https://github.com/aws/agentcore-cli) provides `create`, `add`, `deploy`, `status`, `logs`, and more — we recommend it and don't replace or abstract any of it.
 
 strands-compose-agentcore CLI tools `dev` and `client` use `AnsiRenderer` from strands-compose to render stream events with color, formatting, and progressive typewriter output. This is the only reason we ship our own CLI — we don't duplicate or replace the AgentCore CLI, we complement it for the streaming use case it doesn't cover.
 
@@ -93,7 +96,7 @@ strands-compose-agentcore CLI tools `dev` and `client` use `AnsiRenderer` from s
 
 ## How you deploy
 
-**For individual developers and small teams**, we recommend the [AgentCore CLI](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-cli.html). It handles project scaffolding, packaging, and deployment in a few commands. Use `sca dev` for local iteration, `agentcore deploy` to ship.
+**For individual developers and small teams**, we recommend the [AgentCore CLI](https://github.com/aws/agentcore-cli). It handles project scaffolding, packaging, and deployment in a few commands. Use `sca dev` for local iteration, `agentcore deploy` to ship.
 
 **For enterprise teams**, you likely have your own infrastructure-as-code (Terraform, CDK, CloudFormation) and CI/CD pipelines. In that case, `create_app()` is all you need from this package — build a Docker image with your `main.py` and `config.yaml`, push it to ECR, and let your pipeline update the agent runtime. Or ship as a CodeZip artifact to S3. The AgentCore CLI is optional — it's a convenient tool, not a requirement.
 
@@ -130,7 +133,7 @@ Each layer does one thing. strands-compose parses your YAML and builds agents. T
 pip install strands-compose-agentcore
 ```
 
-> This pulls in `strands-compose` and `bedrock-agentcore` automatically. The [AgentCore CLI](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-cli.html) is a separate Node.js tool: `npm install -g @aws/agentcore`
+> This pulls in `strands-compose` and `bedrock-agentcore` automatically. The [AgentCore CLI](https://github.com/aws/agentcore-cli) is a separate Node.js tool: `npm install -g @aws/agentcore`
 
 ### Required files
 
@@ -159,6 +162,9 @@ from pathlib import Path
 from strands_compose_agentcore import create_app
 
 app = create_app(Path(__file__).parent / "config.yaml")
+
+if __name__ == "__main__":
+    app.run(port=8080)
 ```
 
 **`pyproject.toml`** — declares dependencies for deployment:
@@ -242,6 +248,7 @@ Deep dives into every component — architecture, API reference, deployment patt
 | [07 — The Client](docs/Chapter_07.md) | `LocalClient`, `AsyncLocalClient`, and `AgentCoreClient` API + integration patterns |
 | [08 — Advanced Topics](docs/Chapter_08.md) | VPC, logging, timeouts, health checks, CDK |
 | [09 — Deployment Strategies](docs/Chapter_09.md) | Individual developers vs enterprise teams — AgentCore CLI, IaC, CI/CD |
+| [10 — Observability](docs/Chapter_10.md) | Logs, traces, and token usage in CloudWatch with OpenTelemetry |
 | [Quick Recipes](docs/Quick_Recipes.md) | AWS services reference — tools, packages, and patterns at a glance |
 
 ## Developer setup

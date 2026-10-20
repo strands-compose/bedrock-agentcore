@@ -24,7 +24,7 @@ This package does **not**:
 
 - **Define agents, models, or tools** — that's [strands-compose](https://github.com/strands-compose/sdk-python). We read the YAML config it defines; all agent logic lives there.
 - **Provide the ASGI server or `/invocations` endpoint** — that's [bedrock-agentcore](https://pypi.org/project/bedrock-agentcore/) (the Python runtime SDK). We return a `BedrockAgentCoreApp` instance from it.
-- **Deploy infrastructure** — that's the [AgentCore CLI](https://github.com/aws/agentcore-cli) ([docs](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-cli.html)) or [AWS CDK](https://docs.aws.amazon.com/cdk/v2/guide/home.html). We provide convenience CLI for local testing and invoking deployed agents.
+- **Deploy infrastructure** — that's the [AgentCore CLI](https://github.com/aws/agentcore-cli) or [AWS CDK](https://docs.aws.amazon.com/cdk/v2/guide/home.html). We provide convenience CLI for local testing and invoking deployed agents.
 - **Manage the model runtime** — that's [Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/). We configure which model to use; Bedrock handles inference.
 
 We are the glue between strands-compose and AgentCore Runtime. Nothing more.
@@ -66,7 +66,7 @@ We are the glue between strands-compose and AgentCore Runtime. Nothing more.
 | [strands-compose](https://github.com/strands-compose/sdk-python) | YAML → agent definitions | Transitive dependency |
 | [bedrock-agentcore](https://pypi.org/project/bedrock-agentcore/) | ASGI server + session context | Transitive dependency |
 | **strands-compose-agentcore** | Deployment adapter (this package) | `pip install strands-compose-agentcore` |
-| [AgentCore CLI](https://github.com/aws/agentcore-cli) ([docs](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-cli.html)) | Scaffold, deploy, logs, status | `npm install -g @aws/agentcore` |
+| [AgentCore CLI](https://github.com/aws/agentcore-cli) | Scaffold, deploy, logs, status | `npm install -g @aws/agentcore` |
 | [boto3](https://pypi.org/project/boto3/) | Data-plane API (invoke) | For `AgentCoreClient` |
 
 Installing `strands-compose-agentcore` pulls in `strands-compose` and `bedrock-agentcore` automatically. The [AgentCore CLI](https://github.com/aws/agentcore-cli) is a separate Node.js tool — you only need it for deployment.
@@ -116,7 +116,7 @@ if __name__ == "__main__":
     app.run(port=8080)
 ```
 
-That's 4 lines. The YAML config defines the agents; this script just wires them to the runtime.
+That's 5 lines. The YAML config defines the agents; this script just wires them to the runtime.
 
 ## Next
 

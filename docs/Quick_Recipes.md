@@ -16,7 +16,7 @@ Managed compute for running AI agents. Provides session-isolated microVMs, sessi
 
 Fully managed service for foundation models. Provides inference for Claude, Llama, Mistral, and other models. Referenced by `provider: bedrock` in your YAML config.
 
-**Docs:** [Bedrock User Guide](https://docs.aws.amazon.com/bedrock/latest/userguide/) · [Supported models](https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html) · [Model access](https://console.aws.amazon.com/bedrock/home#/modelaccess)
+**Docs:** [Bedrock User Guide](https://docs.aws.amazon.com/bedrock/latest/userguide/) · [Supported models](https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html) · [Model access](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html)
 
 ---
 
@@ -30,7 +30,7 @@ Managed memory service for AI agents. Used by the `agentcore` session manager pr
 
 ### Amazon CloudWatch Logs
 
-Log management service that collects, stores, and makes logs searchable. Receives structured JSON logs from your deployed agent. View with `agentcore logs` or the CloudWatch console.
+Log management service that collects, stores, and makes logs searchable. Receives your deployed agent's stdout/stderr and, with ADOT, its OTEL logs and trace spans (see [Chapter 10](Chapter_10.md)). View with `agentcore logs` or the CloudWatch console.
 
 **Docs:** [CloudWatch Logs documentation](https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/)
 
@@ -46,7 +46,7 @@ Object storage. Optional session persistence backend — use `provider: s3` in `
 
 ### Amazon ECR
 
-Container registry. Stores Docker images for container-based deployments (Path B in [Chapter 06](Chapter_06.md)). Only needed if you choose container deployment instead of CodeZip.
+Container registry. Stores Docker images for container-based deployments (Paths B and C in [Chapter 06](Chapter_06.md)). Only needed if you choose container deployment instead of CodeZip.
 
 **Docs:** [ECR documentation](https://docs.aws.amazon.com/ecr/)
 
@@ -57,9 +57,9 @@ Container registry. Stores Docker images for container-based deployments (Path B
 Identity and access management. Controls permissions for deploying agents, invoking models, and accessing resources.
 
 Key permissions:
-- `bedrock:InvokeModel` — call Bedrock models
+- `bedrock:InvokeModel` / `bedrock:InvokeModelWithResponseStream` — call Bedrock models (strands streams by default)
 - `bedrock-agentcore:InvokeAgentRuntime` — invoke deployed agents
-- `s3:GetObject` / `s3:PutObject` — S3 session persistence
+- `s3:GetObject` / `s3:PutObject` / `s3:ListBucket` — S3 session persistence
 
 **Docs:** [IAM documentation](https://docs.aws.amazon.com/IAM/latest/UserGuide/)
 
@@ -94,8 +94,9 @@ General-purpose CLI for all AWS services. Used for credential setup (`aws config
 | `strands-agents` | Agent framework (Agent, tools, hooks) | Transitive dependency |
 | `bedrock-agentcore` | `BedrockAgentCoreApp` ASGI server + AgentCore Memory integration | Transitive dependency |
 | `boto3` | AWS SDK for Python | Transitive dependency |
+| `aws-opentelemetry-distro` | ADOT — exports logs and traces to CloudWatch ([Chapter 10](Chapter_10.md)) | Optional, add it yourself |
 
-You only need to install `strands-compose-agentcore` — everything else comes as a transitive dependency.
+You only need to install `strands-compose-agentcore` — everything else except the optional ADOT comes as a transitive dependency.
 
 ---
 

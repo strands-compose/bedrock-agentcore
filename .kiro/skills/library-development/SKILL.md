@@ -112,8 +112,8 @@ This is an explicit design decision, not an omission:
 - **The invocation lock enforces single-flight where the platform can't.** In
   local development there is no microVM, so a caller could fire a second
   `/invocations` before the first finishes. The lock rejects the second request
-  with an error event and `/ping` reports `HEALTHY_BUSY` so the runtime backs
-  off. Keep the lock; it is the local-dev guarantee of the production invariant.
+  with an error event and `/ping` reports `HealthyBusy` so the runtime keeps
+  the session active. Keep the lock; it is the local-dev guarantee of the production invariant.
 - **The cached session on `app.state` is the one sanctioned piece of shared
   mutable state.** Because there is exactly one in-flight invocation, reasoning
   about it stays simple: snapshot it once, and hold the lock across the run.
