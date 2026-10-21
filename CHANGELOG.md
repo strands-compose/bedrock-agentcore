@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## v0.11.0 (2026-10-21)
+
+### Feat
+
+- pass caller user_id to agent runtime (#54)
+
 ## v0.10.1 (2026-10-21)
 
 ### Fix
