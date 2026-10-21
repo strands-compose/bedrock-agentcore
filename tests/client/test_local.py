@@ -104,3 +104,32 @@ class TestAsyncLocalClientInvoke:
             client._http = httpx.AsyncClient(transport=transport)
             with pytest.raises(ClientConnectionError):
                 _ = [event async for event in client.invoke("Hello")]
+
+
+class TestLocalClientUserId:
+    """``user_id`` travels in the payload next to ``prompt``."""
+
+    def test_sync_sends_user_id_in_payload(self) -> None:
+        sent: list[bytes] = []
+
+        def fake_urlopen(req, timeout=None):
+            sent.append(req.data)
+            return FakeUrlResponse([])
+
+        with patch("strands_compose_agentcore.client.local.urlopen", side_effect=fake_urlopen):
+            list(LocalClient().invoke("Hello", user_id="alice"))
+
+        assert json.loads(sent[0]) == {"prompt": "Hello", "user_id": "alice"}
+
+    async def test_async_sends_user_id_in_payload(self) -> None:
+        sent: list[bytes] = []
+
+        async def mock_transport(request: httpx.Request) -> httpx.Response:
+            sent.append(request.content)
+            return httpx.Response(200, text="")
+
+        async with AsyncLocalClient() as client:
+            client._http = httpx.AsyncClient(transport=httpx.MockTransport(mock_transport))
+            _ = [event async for event in client.invoke("Hello", user_id="alice")]
+
+        assert json.loads(sent[0]) == {"prompt": "Hello", "user_id": "alice"}

@@ -103,6 +103,30 @@ def parse_payload(
     )
 
 
+def parse_user_id(payload: Mapping[str, Any]) -> str | None:
+    """Read the optional caller-supplied ``user_id`` from a payload.
+
+    The value is unauthenticated: it is whatever the invoking client sent, so
+    use it for personalisation and logging, never for authorization.
+
+    Args:
+        payload: Request payload, already known to be a JSON object.
+
+    Returns:
+        The user ID, or ``None`` when the payload has no ``user_id`` key.
+
+    Raises:
+        MultimodalPayloadError: ``user_id`` is present but not a non-empty
+            string without NUL characters.
+    """
+    if "user_id" not in payload:
+        return None
+    value = payload["user_id"]
+    if not isinstance(value, str) or not value or "\x00" in value:
+        raise MultimodalPayloadError("'user_id' must be a non-empty string")
+    return value
+
+
 def _decode_blocks(
     blocks: list[Any],
     *,

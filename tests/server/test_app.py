@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections.abc import Iterator
 from typing import Any
 from unittest.mock import patch
@@ -186,3 +187,64 @@ class TestCreateAppLogLevel:
         create_app(minimal_app_config())
 
         assert strands_compose_logger.level == logging.ERROR
+
+
+@pytest.mark.integration
+class TestInvocationsUserId:
+    """The payload's ``user_id`` is exposed as ``USER_ID`` for each invocation."""
+
+    @staticmethod
+    def _post(test_client, payload: dict[str, Any]) -> Any:
+        fake_session = FakeSessionState(resolved=FakeResolvedConfig(entry=FakeEntry(result=None)))
+        with patch("strands_compose_agentcore.app.resolve_session", return_value=fake_session):
+            return test_client.post("/invocations", json=payload, headers={_HEADER: _SID})
+
+    def test_user_id_is_set_in_environment(self, test_client, monkeypatch) -> None:
+        monkeypatch.delenv("USER_ID", raising=False)
+
+        self._post(test_client, {"prompt": "Hello", "user_id": "alice"})
+
+        assert os.environ["USER_ID"] == "alice"
+
+    def test_user_id_follows_the_latest_invocation(self, test_client, monkeypatch) -> None:
+        monkeypatch.delenv("USER_ID", raising=False)
+
+        self._post(test_client, {"prompt": "Hello", "user_id": "alice"})
+        self._post(test_client, {"prompt": "Hello", "user_id": "bob"})
+
+        assert os.environ["USER_ID"] == "bob"
+
+    def test_missing_user_id_clears_previous_value(self, test_client, monkeypatch) -> None:
+        monkeypatch.setenv("USER_ID", "alice")
+
+        self._post(test_client, {"prompt": "Hello"})
+
+        assert "USER_ID" not in os.environ
+
+    @pytest.mark.parametrize("bad", ["", 42, ["alice"], "a\x00b"])
+    def test_invalid_user_id_yields_error_event(self, test_client, monkeypatch, bad: Any) -> None:
+        monkeypatch.setenv("USER_ID", "alice")
+
+        response = self._post(test_client, {"prompt": "Hello", "user_id": bad})
+
+        assert any(e.get("type") == "error" for e in _sse_events(response))
+        assert os.environ["USER_ID"] == "alice"
+
+    def test_busy_rejection_does_not_overwrite_running_users_id(
+        self, test_client, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("USER_ID", "alice")
+        session = FakeSessionState(resolved=FakeResolvedConfig(entry=FakeEntry()))
+
+        async def _hold_lock() -> None:
+            await session.invocation_lock.acquire()
+
+        test_client.portal.call(_hold_lock)
+        test_client.app.state.session = session
+        test_client.post(
+            "/invocations",
+            json={"prompt": "Hello", "user_id": "mallory"},
+            headers={_HEADER: session.session_id},
+        )
+
+        assert os.environ["USER_ID"] == "alice"
