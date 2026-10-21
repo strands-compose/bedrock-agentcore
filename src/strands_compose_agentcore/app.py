@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -30,7 +31,7 @@ from starlette.types import StatelessLifespan
 from strands_compose import AppConfig, load_config
 
 from ._utils import error_event, validate_session_id
-from .payload import MultimodalPayloadError, parse_payload
+from .payload import MultimodalPayloadError, parse_payload, parse_user_id
 from .session import close_session, resolve_session, run_entry_agent
 
 logger = logging.getLogger(__name__)
@@ -148,6 +149,9 @@ def create_app(
             payload: Request payload.  Must contain a ``prompt`` key
                 whose value is a string, a single content block dict,
                 or a list of text, image, document, or reply blocks.
+                An optional ``user_id`` string is exposed to the agent
+                code as the ``USER_ID`` environment variable for this
+                invocation (cleared when absent).
 
         Yields:
             JSON-serializable dicts, one per StreamEvent.
@@ -159,6 +163,7 @@ def create_app(
                 max_media_bytes=max_media_bytes,
                 max_media_blocks=max_media_blocks,
             )
+            user_id = parse_user_id(payload)
         except MultimodalPayloadError as exc:
             logger.warning("payload rejected | %s", exc)
             yield error_event(str(exc), exception_type=type(exc).__name__).asdict()
@@ -197,6 +202,14 @@ def create_app(
                 exception_type="AgentBusy",
             ).asdict()
             return
+
+        # Only now is this invocation the one that will run, so the busy-check
+        # above cannot let a rejected request overwrite the running user's ID.
+        # No ``await`` between here and the lock acquire below.
+        if user_id is None:
+            os.environ.pop("USER_ID", None)
+        else:
+            os.environ["USER_ID"] = user_id
 
         if cached is not None and cached.session_id == session_id:
             session = cached

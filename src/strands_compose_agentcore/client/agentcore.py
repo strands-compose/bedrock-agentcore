@@ -131,6 +131,7 @@ class AgentCoreClient:
         agent_input: AgentInput,
         *,
         session_id: str,
+        user_id: str | None = ...,
         raw_output: Literal[True],
     ) -> AsyncGenerator[str, None]: ...
 
@@ -140,6 +141,7 @@ class AgentCoreClient:
         agent_input: AgentInput,
         *,
         session_id: str,
+        user_id: str | None = ...,
         raw_output: Literal[False] = ...,
     ) -> AsyncGenerator[StreamEvent, None]: ...
 
@@ -149,6 +151,7 @@ class AgentCoreClient:
         agent_input: AgentInput,
         *,
         session_id: str,
+        user_id: str | None = ...,
         raw_output: bool,
     ) -> AsyncGenerator[StreamEvent | str, None]: ...
 
@@ -157,6 +160,7 @@ class AgentCoreClient:
         agent_input: AgentInput,
         *,
         session_id: str,
+        user_id: str | None = None,
         raw_output: bool = False,
     ) -> AsyncGenerator[StreamEvent | str, None]:
         """Invoke the agent runtime and yield streaming events.
@@ -177,6 +181,10 @@ class AgentCoreClient:
         Args:
             agent_input: The user turn to send (see shapes above).
             session_id: AgentCore session identifier (33-256 chars).
+            user_id: Optional user identifier sent as ``user_id`` next to
+                ``prompt`` in the payload.  Caller-supplied and
+                unauthenticated — do not use it for authorization.
+                ``None`` (the default) omits the key.
             raw_output: When ``True``, yield raw decoded SSE lines
                 (``str``) instead of parsed
                 :class:`~strands_compose.StreamEvent` objects.  Blank
@@ -207,7 +215,7 @@ class AgentCoreClient:
                 yielded before the failure are still delivered.
         """
         validate_session_id(session_id)
-        body = build_invocation_body(agent_input)
+        body = build_invocation_body(agent_input, user_id=user_id)
         loop = asyncio.get_running_loop()
 
         for attempt in range(1 + self._retry.max_retries):

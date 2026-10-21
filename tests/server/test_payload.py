@@ -6,7 +6,11 @@ import base64
 
 import pytest
 
-from strands_compose_agentcore.payload import MultimodalPayloadError, parse_payload
+from strands_compose_agentcore.payload import (
+    MultimodalPayloadError,
+    parse_payload,
+    parse_user_id,
+)
 from tests.factories import (
     document_payload,
     image_payload,
@@ -198,3 +202,18 @@ class TestParsePayloadErrors:
         p = {"prompt": [{"image": {"format": "png", "source": {"base64": "!!!invalid!!!"}}}]}
         with pytest.raises(MultimodalPayloadError, match="base64"):
             parse_payload(p, **_DEFAULTS)
+
+
+class TestParseUserId:
+    """parse_user_id reads the optional caller-supplied user_id."""
+
+    def test_returns_none_when_absent(self) -> None:
+        assert parse_user_id({"prompt": "hi"}) is None
+
+    def test_returns_the_string(self) -> None:
+        assert parse_user_id({"prompt": "hi", "user_id": "alice"}) == "alice"
+
+    @pytest.mark.parametrize("bad", ["", None, 42, ["a"], "a\x00b"])
+    def test_rejects_invalid_values(self, bad: object) -> None:
+        with pytest.raises(MultimodalPayloadError, match="user_id"):
+            parse_user_id({"prompt": "hi", "user_id": bad})

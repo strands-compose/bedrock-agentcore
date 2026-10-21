@@ -170,3 +170,24 @@ class TestAgentCoreClientStopSession:
             with pytest.raises(AccessDeniedError):
                 await client.stop_session(_SID)
         client.close()
+
+
+class TestAgentCoreClientUserId:
+    """``user_id`` travels in the payload next to ``prompt``."""
+
+    async def test_invoke_sends_user_id_in_payload(self) -> None:
+        client = _client()
+        with Stubber(client._client) as stub:
+            stub.add_response(
+                "invoke_agent_runtime",
+                {"response": _streaming_body(), "contentType": "text/event-stream"},
+                expected_params={
+                    "agentRuntimeArn": _ARN,
+                    "payload": b'{"prompt": "Hello", "user_id": "alice"}',
+                    "contentType": "application/json",
+                    "accept": "text/event-stream",
+                    "runtimeSessionId": _SID,
+                },
+            )
+            _ = [e async for e in client.invoke("Hello", session_id=_SID, user_id="alice")]
+            stub.assert_no_pending_responses()

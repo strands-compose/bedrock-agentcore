@@ -92,19 +92,21 @@ def translate_error(exc: Any) -> AgentCoreClientError:
 # ---------------------------------------------------------------------------
 
 
-def build_invocation_body(agent_input: AgentInput) -> dict[str, Any]:
+def build_invocation_body(agent_input: AgentInput, *, user_id: str | None = None) -> dict[str, Any]:
     """Build the JSON body for an ``/invocations`` request.
 
-    The wire carries a single ``prompt`` key whose value mirrors the
-    ``AgentInput`` shape:
+    The ``prompt`` key's value mirrors the ``AgentInput`` shape:
 
     * ``str`` -> ``{"prompt": str}``
     * one content-block dict -> ``{"prompt": [dict]}``
     * non-empty list of content blocks -> ``{"prompt": [...]}``
 
+    A ``user_id`` key is added next to ``prompt`` when given.
+
     Args:
         agent_input: Prompt text, a single content block, or a list of
             content blocks.
+        user_id: Optional caller-supplied user identifier.
 
     Returns:
         A dict ready for ``json.dumps``.
@@ -112,10 +114,15 @@ def build_invocation_body(agent_input: AgentInput) -> dict[str, Any]:
     Raises:
         ValueError: ``agent_input`` is not a supported shape.
     """
+    body: dict[str, Any]
     if isinstance(agent_input, str):
-        return {"prompt": agent_input}
-    if isinstance(agent_input, dict):
-        return {"prompt": [agent_input]}
-    if isinstance(agent_input, list) and agent_input:
-        return {"prompt": list(agent_input)}
-    raise ValueError(f"invalid agent_input: {agent_input!r}")
+        body = {"prompt": agent_input}
+    elif isinstance(agent_input, dict):
+        body = {"prompt": [agent_input]}
+    elif isinstance(agent_input, list) and agent_input:
+        body = {"prompt": list(agent_input)}
+    else:
+        raise ValueError(f"invalid agent_input: {agent_input!r}")
+    if user_id is not None:
+        body["user_id"] = user_id
+    return body

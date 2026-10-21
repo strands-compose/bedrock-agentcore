@@ -31,3 +31,10 @@ class TestBuildInvocationBody:
     def test_body_raises_value_error_for_unsupported_type(self) -> None:
         with pytest.raises(ValueError, match="invalid"):
             build_invocation_body(42)  # ty: ignore[invalid-argument-type]
+
+    def test_body_adds_user_id_next_to_prompt(self) -> None:
+        result = build_invocation_body("Hello", user_id="alice")
+        assert result == {"prompt": "Hello", "user_id": "alice"}
+
+    def test_body_omits_user_id_when_none(self) -> None:
+        assert "user_id" not in build_invocation_body("Hello")

@@ -112,6 +112,7 @@ class LocalClient:
         agent_input: AgentInput,
         *,
         session_id: str | None = ...,
+        user_id: str | None = ...,
         raw_output: Literal[True],
     ) -> Generator[str, None, None]: ...
 
@@ -121,6 +122,7 @@ class LocalClient:
         agent_input: AgentInput,
         *,
         session_id: str | None = ...,
+        user_id: str | None = ...,
         raw_output: Literal[False] = ...,
     ) -> Generator[StreamEvent, None, None]: ...
 
@@ -130,6 +132,7 @@ class LocalClient:
         agent_input: AgentInput,
         *,
         session_id: str | None = ...,
+        user_id: str | None = ...,
         raw_output: bool,
     ) -> Generator[StreamEvent | str, None, None]: ...
 
@@ -138,6 +141,7 @@ class LocalClient:
         agent_input: AgentInput,
         *,
         session_id: str | None = None,
+        user_id: str | None = None,
         raw_output: bool = False,
     ) -> Generator[StreamEvent | str, None, None]:
         """Send an agent input and yield streaming events.
@@ -158,6 +162,10 @@ class LocalClient:
         Args:
             agent_input: The user turn to send (see shapes above).
             session_id: Override the default session ID for this call.
+            user_id: Optional user identifier sent as ``user_id`` next to
+                ``prompt`` in the payload.  Caller-supplied and
+                unauthenticated — do not use it for authorization.
+                ``None`` (the default) omits the key.
             raw_output: When ``True``, yield raw decoded SSE lines
                 (``str``) instead of parsed
                 :class:`~strands_compose.StreamEvent` objects.  Blank
@@ -182,7 +190,7 @@ class LocalClient:
             ClientConnectionError: Could not connect to the server.
         """
         sid = session_id or self.session_id
-        body_dict = build_invocation_body(agent_input)
+        body_dict = build_invocation_body(agent_input, user_id=user_id)
         body = json.dumps(body_dict).encode()
         req = Request(
             self.url,
@@ -313,6 +321,7 @@ class AsyncLocalClient:
         agent_input: AgentInput,
         *,
         session_id: str | None = ...,
+        user_id: str | None = ...,
         raw_output: Literal[True],
     ) -> AsyncGenerator[str, None]: ...
 
@@ -322,6 +331,7 @@ class AsyncLocalClient:
         agent_input: AgentInput,
         *,
         session_id: str | None = ...,
+        user_id: str | None = ...,
         raw_output: Literal[False] = ...,
     ) -> AsyncGenerator[StreamEvent, None]: ...
 
@@ -331,6 +341,7 @@ class AsyncLocalClient:
         agent_input: AgentInput,
         *,
         session_id: str | None = ...,
+        user_id: str | None = ...,
         raw_output: bool,
     ) -> AsyncGenerator[StreamEvent | str, None]: ...
 
@@ -339,6 +350,7 @@ class AsyncLocalClient:
         agent_input: AgentInput,
         *,
         session_id: str | None = None,
+        user_id: str | None = None,
         raw_output: bool = False,
     ) -> AsyncGenerator[StreamEvent | str, None]:
         """Send an agent input and yield streaming events asynchronously.
@@ -358,6 +370,10 @@ class AsyncLocalClient:
         Args:
             agent_input: The user turn to send (see shapes above).
             session_id: Override the default session ID for this call.
+            user_id: Optional user identifier sent as ``user_id`` next to
+                ``prompt`` in the payload.  Caller-supplied and
+                unauthenticated — do not use it for authorization.
+                ``None`` (the default) omits the key.
             raw_output: When ``True``, yield raw decoded SSE lines
                 (``str``) instead of parsed
                 :class:`~strands_compose.StreamEvent` objects.  Blank
@@ -380,7 +396,7 @@ class AsyncLocalClient:
             ClientConnectionError: Could not connect to the server.
         """
         sid = session_id or self.session_id
-        body = build_invocation_body(agent_input)
+        body = build_invocation_body(agent_input, user_id=user_id)
         try:
             async with self._http.stream(
                 "POST",
