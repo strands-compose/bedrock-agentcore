@@ -67,7 +67,7 @@ AgentCore Runtime runs this file as a script, so keep the `if __name__ == "__mai
 ## Good to know
 
 - **Session state persists** within a dev session. Follow-up messages continue the conversation.
-- Change `model_id` in `config.yaml` to use a different Bedrock model.
+- Change `model_id` in `config.yaml` to use a different Bedrock model. Remove the `params` block too: its thinking settings are Claude-specific.
 - The `description` on each agent tells the coordinator what each sub-agent is for — keep them accurate.
 
 ## REPL commands

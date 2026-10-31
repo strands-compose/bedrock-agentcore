@@ -87,6 +87,11 @@ models:
   default:
     provider: bedrock
     model_id: global.anthropic.claude-haiku-5-5
+    cache: true
+    params:
+        additional_request_fields:
+            thinking: {type: adaptive, display: summarized}
+            output_config: {effort: high}
 
 agents:
   assistant:

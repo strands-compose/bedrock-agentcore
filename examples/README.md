@@ -16,6 +16,8 @@ Three examples that walk you from local prototyping to production deployment.
 
 Update `model_id` in each `config.yaml` to match your Bedrock model availability.
 
+Each example also turns on prompt caching (`cache: true`) and Claude's adaptive thinking (the `params` block). Both are [strands-compose](https://github.com/strands-compose/sdk-python) model options. The `params` block is Claude-specific: remove it when you switch to another model.
+
 **For deployment (example 02):** The [`agentcore` CLI](https://github.com/aws/agentcore-cli) is a Node.js tool provided by AWS — install it with `npm install -g @aws/agentcore` (requires Node.js 20+).
 
 ## Quick start

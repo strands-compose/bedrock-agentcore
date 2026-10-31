@@ -37,9 +37,14 @@ def main() -> int:
         elif event.type == "error":
             print("\nError:", event.data.get("text"), file=sys.stderr)
         elif event.type == "agent_complete":
-            input_tokens = event.data.get("usage", {}).get("input_tokens")
-            output_tokens = event.data.get("usage", {}).get("output_tokens")
-            print(f"\n\n[USAGE] Input: {input_tokens} tokens,  Output: {output_tokens} tokens\n")
+            usage = event.data.get("usage", {})
+            # With caching on, cached prompt tokens are not counted in input_tokens.
+            print(
+                f"\n\n[USAGE] Input: {usage.get('input_tokens')} tokens"
+                f" (+ cache read {usage.get('cache_read_input_tokens', 0)},"
+                f" cache write {usage.get('cache_write_input_tokens', 0)}),"
+                f"  Output: {usage.get('output_tokens')} tokens\n"
+            )
     return 0
 
 
