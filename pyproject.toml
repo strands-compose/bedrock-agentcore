@@ -120,3 +120,8 @@ convention = "google"
 [tool.pyright]
 reportInvalidTypeForm = "none"
 extraPaths = ["src", "."]
+
+[tool.pyrefly]
+search-path = ["src", "."]
+# ty is the project's type checker; honour its suppressions in the editor too.
+enabled-ignores = ["type", "pyrefly", "ty"]

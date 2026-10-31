@@ -6,7 +6,6 @@ import argparse
 import socket
 import threading
 import time
-import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -112,7 +111,7 @@ def _wait_for_server(ping_url: str, timeout: float) -> bool:
             # Security alert is false positive
             with urllib.request.urlopen(ping_url, timeout=2):  # nosec: B310
                 return True
-        except (OSError, urllib.error.URLError):
+        except OSError:
             time.sleep(_SERVER_POLL_INTERVAL)
     return False
 

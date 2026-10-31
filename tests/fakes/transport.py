@@ -62,7 +62,13 @@ def streaming_body(content: io.BytesIO) -> StreamingBody:
         A real ``StreamingBody`` over a real ``urllib3.HTTPResponse`` reading
         from ``content``; ``content.tell()`` shows how much the client read.
     """
-    return StreamingBody(urllib3.HTTPResponse(body=content, preload_content=False), None)
+    return _wrap(urllib3.HTTPResponse(body=content, preload_content=False))
+
+
+def _wrap(raw: urllib3.BaseHTTPResponse) -> StreamingBody:
+    """Wrap a urllib3 response with no Content-Length, as botocore does."""
+    # botocore passes these itself; its stubs type the stream as IO[bytes] and the length as int.
+    return StreamingBody(raw, None)  # pyrefly: ignore[bad-argument-type]
 
 
 def sse_body(*lines: str) -> StreamingBody:
@@ -127,7 +133,7 @@ class LiveSSEStream:
             preload_content=False,
             decode_content=False,
         )
-        self.body = StreamingBody(raw, None)
+        self.body = _wrap(raw)
         self._read_request()
 
     def _read_request(self) -> None:
