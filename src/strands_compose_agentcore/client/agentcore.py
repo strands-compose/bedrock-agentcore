@@ -3,15 +3,15 @@
 Provides :class:`AgentCoreClient` — a thin client that calls
 ``invoke_agent_runtime`` and yields
 :class:`~strands_compose.StreamEvent` objects from the streaming
-response.  All boto3 I/O is offloaded to a dedicated thread executor
-so callers can ``async for event in client.invoke(...)`` without
-blocking the event loop.
+response.  All boto3 I/O runs in a private thread pool so callers can
+``async for event in client.invoke(...)`` without blocking the event
+loop.  The next line is read from AWS only when the caller asks for the
+next event, so a slow consumer never makes the client buffer a response.
 
-The client is safe for concurrent use from multiple coroutines (e.g.
-multi-tenant FastAPI).  Each ``invoke()`` call gets its own streaming
-response — no shared mutable state between sessions.  A dedicated
-``ThreadPoolExecutor`` is sized to the expected number of concurrent
-streams so the default executor is never starved.
+The client is safe for concurrent use from multiple coroutines on one
+event loop (e.g. multi-tenant FastAPI).  Each ``invoke()`` call gets its
+own streaming response; ``max_concurrent_streams`` caps how many run at
+once, with one pool worker per stream.
 """
 
 from __future__ import annotations
@@ -30,13 +30,16 @@ from ..types import AgentInput, RetryableConflictError, RetryConfig, ThrottledEr
 from .repl import run_repl
 from .utils import (
     DEFAULT_SESSION_ID,
+    abort_stream,
     build_invocation_body,
+    iter_lines,
     parse_sse_line,
     translate_error,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Iterator
+    from collections.abc import AsyncGenerator
+    from concurrent.futures import Future
 
     import boto3
     from botocore.response import StreamingBody
@@ -45,66 +48,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Upper bound for one socket read.  ``read1`` returns whatever has already
-# arrived, so this caps per-stream buffering without delaying small events.
-_READ_SIZE = 64 * 1024
 
-
-def _http_response(stream_body: StreamingBody) -> HTTPResponse:
-    """Return the urllib3 response that botocore wraps in ``stream_body``.
-
-    ``StreamingBody`` only offers ``read(n)``, which blocks until ``n`` bytes
-    arrive, and ``close()``, which waits for a read running in another
-    thread.  urllib3's ``read1()`` and ``shutdown()`` avoid both, but
-    botocore exposes the urllib3 response only as ``_raw_stream``.
-
-    Raises:
-        TypeError: botocore returned a body not backed by urllib3.
-    """
-    from urllib3 import HTTPResponse
-
-    raw = stream_body._raw_stream
-    if not isinstance(raw, HTTPResponse):
-        raise TypeError(f"expected a urllib3 response body, got {type(raw).__name__}")
-    return raw
-
-
-def _read1(response: HTTPResponse) -> bytes:
-    """Read the bytes that have arrived, waiting only if there are none.
-
-    urllib3 errors are re-raised as the botocore exceptions that
-    ``StreamingBody.read`` raises, so callers see the same types.
-    """
-    from botocore.exceptions import ReadTimeoutError, ResponseStreamingError
-    from urllib3.exceptions import ProtocolError
-    from urllib3.exceptions import ReadTimeoutError as URLLib3ReadTimeoutError
-
-    try:
-        return response.read1(_READ_SIZE)
-    except URLLib3ReadTimeoutError as exc:
-        raise ReadTimeoutError(endpoint_url=exc.url, error=exc) from exc
-    except ProtocolError as exc:
-        raise ResponseStreamingError(error=exc) from exc
-
-
-def _iter_lines(response: HTTPResponse) -> Iterator[bytes]:
-    """Yield each line of ``response`` as soon as its newline arrives.
-
-    ``StreamingBody.iter_lines`` reads fixed-size chunks, so an SSE event
-    that does not fill a chunk waits for the *next* event before it is
-    delivered.  Reading with ``read1`` never holds a complete line back.
-
-    Yields:
-        Lines without their line ending; blank lines are ``b""``.
-    """
-    pending = b""
-    while chunk := _read1(response):
-        lines = (pending + chunk).splitlines(keepends=True)
-        pending = b"" if lines[-1].endswith((b"\n", b"\r")) else lines.pop()
-        for line in lines:
-            yield line.rstrip(b"\r\n")
-    if pending:
-        yield pending
+def _close_late_response(call: Future[dict[str, Any]]) -> None:
+    """Close the stream AWS returned after its caller was cancelled."""
+    if not call.cancelled() and call.exception() is None:
+        call.result()["response"].close()
 
 
 @dataclass(frozen=True)
@@ -138,9 +86,9 @@ class AgentCoreClient:
         Calls the AgentCore data-plane API, reads the SSE streaming response,
         and yields :class:`~strands_compose.StreamEvent` objects.
 
-        Safe for concurrent use from multiple coroutines — each
-        ``invoke()`` call gets its own boto3 response/stream, and a
-        **dedicated** ``ThreadPoolExecutor`` ensures the event loop's
+        Safe for concurrent use from multiple coroutines on one event
+        loop — each ``invoke()`` call gets its own boto3 response/stream,
+        and a **dedicated** ``ThreadPoolExecutor`` ensures the event loop's
         default executor is never starved by long-running SSE reads.
 
         Args:
@@ -149,11 +97,10 @@ class AgentCoreClient:
                 session's default region.
             session: Optional pre-configured ``boto3.Session``.
             timeout: Socket read timeout in seconds for the streaming
-                response.  ``None`` uses the botocore default.
-            max_concurrent_streams: Maximum number of concurrent
-                ``invoke()`` calls that can stream simultaneously.
-                Each active stream holds one thread while reading the
-                SSE response.
+                response.  ``None`` uses the botocore default (60 s).
+            max_concurrent_streams: Maximum number of ``invoke()`` calls
+                that run at once; further calls wait for a free slot
+                without blocking the event loop.
             retry: Retry configuration for throttled and retryable-conflict
                 requests.  ``None`` disables retry (default).  Pass
                 ``RetryConfig()`` for sensible defaults.
@@ -170,6 +117,8 @@ class AgentCoreClient:
             max_workers=max_concurrent_streams,
             thread_name_prefix="agentcore-stream",
         )
+        self._slots = asyncio.Semaphore(max_concurrent_streams)
+        self._streams: set[HTTPResponse] = set()
 
         resolved_region = region or self._session.region_name
         if not resolved_region:
@@ -230,7 +179,8 @@ class AgentCoreClient:
 
         Sends a JSON payload to the deployed agent, then reads the SSE
         response stream and yields
-        :class:`~strands_compose.StreamEvent` objects one at a time.
+        :class:`~strands_compose.StreamEvent` objects one at a time, each
+        as soon as it arrives.
 
         ``agent_input`` accepts this package's small client contract:
 
@@ -274,74 +224,36 @@ class AgentCoreClient:
             RetryableConflictError: Session was provisioning or tearing down.
             AgentCoreClientError: Any other service error (includes AWS
                 error code and message).
-            OSError: The response stream failed part-way through; events
-                yielded before the failure are still delivered.
+            RuntimeError: The client is closed.
+            botocore.exceptions.ResponseStreamingError: The stream failed
+                part-way through, or the client was closed meanwhile;
+                events yielded before the failure are still delivered.
+            botocore.exceptions.ReadTimeoutError: The stream was silent
+                for longer than ``timeout``.
         """
         validate_session_id(session_id)
         body = build_invocation_body(agent_input, user_id=user_id)
         loop = asyncio.get_running_loop()
 
-        for attempt in range(1 + self._retry.max_retries):
+        async with self._slots:
+            stream_body = await self._start(session_id, body)
+            # Use urllib3 response; botocore has no public handle (and its stubs omit it)
+            stream: HTTPResponse = stream_body._raw_stream  # type: ignore[attr-defined]
+            self._streams.add(stream)
+            texts = (line.decode("utf-8").strip() for line in iter_lines(stream))
+            # Each next() runs in the pool and reads only until one item is ready;
+            # filter() drops blank lines and non-event noise.
+            items = filter(None, (text if raw_output else parse_sse_line(text) for text in texts))
             try:
-                response = await loop.run_in_executor(
-                    self._executor, self._invoke_sync, session_id, body
-                )
-                break
-            except (ThrottledError, RetryableConflictError):
-                if attempt >= self._retry.max_retries:
-                    raise
-                delay = min(
-                    self._retry.base_delay * (2**attempt),
-                    self._retry.max_delay,
-                )
-                if self._retry.jitter:
-                    delay += random.uniform(0, self._retry.base_delay)  # nosec B311
-                logger.info(
-                    "attempt=<%d>, delay=<%0.2f> | throttled, retrying",
-                    attempt + 1,
-                    delay,
-                )
-                await asyncio.sleep(delay)
-
-        stream_body = response["response"]  # botocore StreamingBody
-        queue: asyncio.Queue[bytes | None] = asyncio.Queue()
-
-        def _producer() -> None:
-            try:
-                for line in _iter_lines(_http_response(stream_body)):
-                    loop.call_soon_threadsafe(queue.put_nowait, line)
+                while (
+                    item := await loop.run_in_executor(self._executor, next, items, None)
+                ) is not None:
+                    yield item
             finally:
-                loop.call_soon_threadsafe(queue.put_nowait, None)
-
-        producer_future = loop.run_in_executor(self._executor, _producer)
-        drained = False
-        try:
-            while True:
-                line = await queue.get()
-                if line is None:
-                    drained = True
-                    break
-                text = line.decode("utf-8").strip()
-                if raw_output:
-                    if text:
-                        yield text
-                else:
-                    event = parse_sse_line(text)
-                    if event is not None:
-                        yield event
-        finally:
-            with suppress(Exception):
-                stream_body.close()
-            if drained:
-                # The producer's sentinel is emitted on failure too, so awaiting
-                # it here is the only thing that turns a mid-stream transport
-                # error into an exception instead of a clean end of stream.
-                await producer_future
-            else:
-                # Consumer disconnected or raised — don't mask that with the
-                # producer's error.
+                self._streams.discard(stream)
+                abort_stream(stream)  # a cancelled caller can leave a read running
                 with suppress(Exception):
-                    await producer_future
+                    stream_body.close()
 
     def repl(self, *, session_id: str | None = None) -> None:
         """Start an interactive REPL that streams agent responses with AnsiRenderer.
@@ -383,7 +295,8 @@ class AgentCoreClient:
 
         Calls the AWS ``bedrock-agentcore.stop_runtime_session`` data-plane
         action.  AWS documents this as instantly terminating the specified
-        session and stopping any ongoing streaming responses.
+        session and stopping any ongoing streaming responses.  The call runs
+        outside the stream pool, so busy streams never delay it.
 
         Required IAM permission on the **calling principal**:
         ``bedrock-agentcore:StopRuntimeSession`` on the target runtime ARN.
@@ -426,9 +339,7 @@ class AgentCoreClient:
                 formatted as ``[<code>] <message>``).
         """
         validate_session_id(session_id)
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            self._executor,
+        return await asyncio.to_thread(
             self._stop_session_sync,
             session_id,
             qualifier,
@@ -436,6 +347,30 @@ class AgentCoreClient:
         )
 
     # -- Private helpers -----------------------------------------------------
+
+    async def _start(self, session_id: str, body: dict[str, Any]) -> StreamingBody:
+        """Call ``invoke_agent_runtime``, retrying per :class:`RetryConfig`.
+
+        Returns:
+            The open response stream.
+        """
+        attempt = 0
+        while True:
+            call = self._executor.submit(self._invoke_sync, session_id, body)
+            try:
+                return (await asyncio.wrap_future(call))["response"]
+            except asyncio.CancelledError:
+                call.add_done_callback(_close_late_response)  # AWS may still answer
+                raise
+            except (ThrottledError, RetryableConflictError):
+                if attempt >= self._retry.max_retries:
+                    raise
+            delay = min(self._retry.base_delay * (2**attempt), self._retry.max_delay)
+            if self._retry.jitter:
+                delay += random.uniform(0, self._retry.base_delay)  # nosec B311
+            logger.info("attempt=<%d>, delay=<%0.2f> | throttled, retrying", attempt + 1, delay)
+            await asyncio.sleep(delay)
+            attempt += 1
 
     def _stop_session_sync(
         self,
@@ -446,7 +381,7 @@ class AgentCoreClient:
         """Execute the synchronous boto3 ``stop_runtime_session`` call.
 
         Translates botocore ``ClientError`` into typed exceptions.
-        Called via ``run_in_executor`` from :meth:`stop_session`.
+        Called via ``asyncio.to_thread`` from :meth:`stop_session`.
 
         Args:
             session_id: Validated AgentCore session identifier.
@@ -497,7 +432,7 @@ class AgentCoreClient:
         """Execute the synchronous boto3 invoke_agent_runtime call.
 
         Translates botocore ``ClientError`` into typed exceptions.
-        Called via ``run_in_executor`` from :meth:`invoke`.
+        Runs in the stream pool, via :meth:`_start`.
         """
         from botocore.exceptions import ClientError
 
@@ -521,14 +456,20 @@ class AgentCoreClient:
         return self
 
     async def __aexit__(self, *exc: object) -> None:
-        """Exit the async context manager and shut down the thread pool."""
-        self.close()
+        """Exit the async context manager via :meth:`aclose`."""
+        await self.aclose()
+
+    async def aclose(self) -> None:
+        """Like :meth:`close`, but never blocks the event loop."""
+        await asyncio.to_thread(self.close)
 
     def close(self) -> None:
-        """Shut down the thread pool.
+        """Abort streams that are still open, then shut down the thread pool.
 
-        Call this when the client is no longer needed — for example in
-        a FastAPI ``lifespan`` shutdown handler.  In-flight streams
-        finish before the pool is torn down.
+        Consumers of an aborted stream get ``ResponseStreamingError``; later
+        ``invoke()`` calls raise ``RuntimeError``.  Safe to call twice.  In
+        async code (e.g. a FastAPI ``lifespan``) use :meth:`aclose`.
         """
-        self._executor.shutdown(wait=True)
+        for stream in list(self._streams):
+            abort_stream(stream)
+        self._executor.shutdown(wait=True, cancel_futures=True)

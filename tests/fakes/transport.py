@@ -17,10 +17,12 @@ from __future__ import annotations
 import io
 import json
 import socket
+import threading
 from typing import Any
 
 import urllib3
 from botocore.response import StreamingBody
+from urllib3 import HTTPConnectionPool
 from urllib3.connection import HTTPConnection
 
 _CHUNKED_HEADERS = (
@@ -68,6 +70,32 @@ def sse_body(*lines: str) -> StreamingBody:
     return streaming_body(io.BytesIO("".join(f"{line}\n" for line in lines).encode("utf-8")))
 
 
+class _ClientSocket(socket.socket):
+    """A real socket that records when its owner is waiting for data."""
+
+    def __init__(self, sock: socket.socket) -> None:
+        super().__init__(sock.family, sock.type, fileno=sock.detach())
+        self.receiving = threading.Event()
+
+    def recv_into(self, buffer: Any, nbytes: int = 0, flags: int = 0) -> int:
+        self.receiving.set()
+        try:
+            return super().recv_into(buffer, nbytes, flags)
+        finally:
+            self.receiving.clear()
+
+
+class _OpenSocketConnection(HTTPConnection):
+    """A urllib3 connection that adopts an already-open socket instead of dialling."""
+
+    def __init__(self, *args: Any, open_socket: socket.socket, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._open_socket = open_socket
+
+    def connect(self) -> None:
+        self.sock = self._open_socket
+
+
 class LiveSSEStream:
     """An open chunked SSE response that the test feeds while the client reads.
 
@@ -81,18 +109,24 @@ class LiveSSEStream:
     """
 
     def __init__(self, *, read_timeout: float = 5.0) -> None:
-        self._server, client = socket.socketpair()
+        self._server, plain = socket.socketpair()
+        self._client = client = _ClientSocket(plain)
         self._server.settimeout(read_timeout)
         client.settimeout(read_timeout)
-        # urllib3 builds the response from its own connection, as it does for
-        # botocore; a preset socket skips the TCP connect.
-        connection = HTTPConnection("agentcore.test", timeout=read_timeout)
-        connection.sock = client
-        connection.request(
-            "POST", "/invocations", body=b"{}", preload_content=False, decode_content=False
-        )
         self._server.sendall(_CHUNKED_HEADERS)
-        raw = connection.getresponse()
+        # The same urlopen call botocore makes, over the socketpair.
+        pool = HTTPConnectionPool("agentcore.test", timeout=read_timeout, open_socket=client)
+        # urllib3's own HTTPConnection does not satisfy its BaseHTTPConnection
+        # protocol under ty (default_socket_options variance).
+        pool.ConnectionCls = _OpenSocketConnection  # ty: ignore[invalid-assignment]
+        raw = pool.urlopen(
+            "POST",
+            "/invocations",
+            body=b"{}",
+            retries=False,
+            preload_content=False,
+            decode_content=False,
+        )
         self.body = StreamingBody(raw, None)
 
     def send(self, *lines: str) -> None:
@@ -110,12 +144,19 @@ class LiveSSEStream:
         self._server.sendall(b"ff\r\ndata: {")
         self._server.close()
 
-    def client_disconnected(self) -> bool:
-        """Block until the client closes its end; ``False`` on timeout."""
+    def wait_until_client_reads(self, timeout: float = 2.0) -> bool:
+        """Block until a client thread is waiting on the socket for more data."""
+        return self._client.receiving.wait(timeout)
+
+    def client_disconnected(self, timeout: float = 1.0) -> bool:
+        """Block until the client closes its end; ``False`` if it has not within ``timeout``."""
+        self._server.settimeout(timeout)
         try:
-            return self._server.recv(1) == b""
+            while self._server.recv(4096):  # skip the request the client sent
+                pass
         except TimeoutError:
             return False
+        return True
 
     def close(self) -> None:
         """Release the server end."""

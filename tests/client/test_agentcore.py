@@ -11,7 +11,9 @@ through the same stack it uses against AWS.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterator
+import io
+import threading
+from collections.abc import AsyncIterator, Iterator
 
 import pytest
 from botocore.exceptions import ResponseStreamingError
@@ -25,7 +27,7 @@ from strands_compose_agentcore.types import (
     RetryConfig,
     ThrottledError,
 )
-from tests.fakes.transport import LiveSSEStream, sse_body, sse_line
+from tests.fakes.transport import LiveSSEStream, sse_body, sse_line, streaming_body
 
 _ARN = "arn:aws:bedrock-agentcore:us-east-1:0:runtime/test"
 _SID = "s" * 33
@@ -33,13 +35,21 @@ _SID = "s" * 33
 _GUARD = 2.0
 
 
-def _client(*, retry: RetryConfig | None = None) -> AgentCoreClient:
+def _client(
+    *, retry: RetryConfig | None = None, max_concurrent_streams: int = 64
+) -> AgentCoreClient:
     """Build a client without touching AWS (region supplied explicitly)."""
-    return AgentCoreClient(_ARN, region="us-east-1", retry=retry)
+    return AgentCoreClient(
+        _ARN, region="us-east-1", retry=retry, max_concurrent_streams=max_concurrent_streams
+    )
 
 
 def _stream_response(body: object) -> dict[str, object]:
     return {"response": body, "contentType": "text/event-stream"}
+
+
+async def _collect(stream: AsyncIterator[StreamEvent]) -> list[StreamEvent]:
+    return [e async for e in stream]
 
 
 @pytest.fixture
@@ -156,6 +166,140 @@ class TestAgentCoreClientStreaming:
         assert received == ["token"]
         client.close()
 
+    async def test_slow_consumer_does_not_make_the_client_read_ahead(self) -> None:
+        # The response is far larger than one read.  While the caller sits on
+        # the first event, the client must not pull the rest into memory.
+        client = _client()
+        content = io.BytesIO(
+            "".join(f"{sse_line(text='x' * 1000)}\n" for _ in range(200)).encode("utf-8")
+        )
+        total = len(content.getvalue())
+        with Stubber(client._client) as stub:
+            stub.add_response("invoke_agent_runtime", _stream_response(streaming_body(content)))
+            stream = client.invoke("Hello", session_id=_SID)
+            await anext(stream)
+            consumed = content.tell()
+            await stream.aclose()
+
+        assert consumed < total
+        client.close()
+
+
+class TestAgentCoreClientConcurrency:
+    """``max_concurrent_streams`` is a real cap, and a finished caller frees its slot."""
+
+    async def test_invocation_beyond_the_cap_waits_for_a_free_slot(
+        self, live: LiveSSEStream
+    ) -> None:
+        client = _client(max_concurrent_streams=1)
+        with Stubber(client._client) as stub:
+            stub.add_response("invoke_agent_runtime", _stream_response(live.body))
+            first = client.invoke("A", session_id=_SID)
+            live.send(sse_line("agent_start"))
+            await asyncio.wait_for(anext(first), _GUARD)  # A holds the only slot
+            second = asyncio.create_task(_collect(client.invoke("B", session_id=_SID)))
+
+            # B's response is not stubbed yet: had B called AWS while A was
+            # streaming, Stubber would have failed it.
+            live.send(sse_line(text="a"))
+            live.end()
+            first_rest = [e.type async for e in first]
+            stub.add_response("invoke_agent_runtime", _stream_response(sse_body(sse_line())))
+            second_events = await asyncio.wait_for(second, _GUARD)
+
+        assert first_rest == ["token"]
+        assert [e.type for e in second_events] == ["token"]
+        client.close()
+
+    async def test_cancelled_consumer_frees_its_slot_and_connection_at_once(
+        self, live: LiveSSEStream
+    ) -> None:
+        # A browser that disconnects cancels the request task while the client
+        # waits on a silent AWS stream.  The wait must end immediately -- not
+        # at the socket read timeout -- so the next caller is not held up.
+        client = _client(max_concurrent_streams=1)
+        with Stubber(client._client) as stub:
+            stub.add_response("invoke_agent_runtime", _stream_response(live.body))
+            stub.add_response("invoke_agent_runtime", _stream_response(sse_body(sse_line())))
+            first = client.invoke("A", session_id=_SID)
+            live.send(sse_line("agent_start"))
+            await anext(first)
+            waiting = asyncio.create_task(anext(first))
+            assert await asyncio.to_thread(live.wait_until_client_reads)
+
+            # Watch from another thread: if cleanup froze the event loop until
+            # the socket read timed out, the watcher gives up first.
+            watcher = asyncio.create_task(asyncio.to_thread(live.client_disconnected))
+            waiting.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiting
+            disconnected = await watcher
+            second = await asyncio.wait_for(_collect(client.invoke("B", session_id=_SID)), _GUARD)
+
+        assert disconnected
+        assert [e.type for e in second] == ["token"]
+        client.close()
+
+    async def test_consumer_cancelled_before_aws_answers_releases_the_late_response(
+        self, live: LiveSSEStream
+    ) -> None:
+        # Cold starts make the first AWS call slow.  A caller that gives up
+        # meanwhile must not leak the response AWS sends afterwards, and its
+        # slot must come back for the next caller.
+        aws_called, aws_answers = threading.Event(), threading.Event()
+
+        def slow_aws(**_: object) -> None:
+            aws_called.set()
+            aws_answers.wait(_GUARD)
+
+        client = _client(max_concurrent_streams=1)
+        client._client.meta.events.register(
+            "before-parameter-build.bedrock-agentcore.InvokeAgentRuntime", slow_aws
+        )
+        with Stubber(client._client) as stub:
+            stub.add_response("invoke_agent_runtime", _stream_response(live.body))
+            stub.add_response("invoke_agent_runtime", _stream_response(sse_body(sse_line())))
+            first = asyncio.create_task(anext(client.invoke("A", session_id=_SID)))
+            assert await asyncio.to_thread(aws_called.wait, _GUARD)
+
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+            second = asyncio.create_task(_collect(client.invoke("B", session_id=_SID)))
+            aws_answers.set()
+            second_events = await asyncio.wait_for(second, _GUARD)
+            disconnected = await asyncio.to_thread(live.client_disconnected)
+
+        assert [e.type for e in second_events] == ["token"]
+        assert disconnected
+        client.close()
+
+
+class TestAgentCoreClientLifecycle:
+    """Closing the client aborts open streams and refuses new work."""
+
+    async def test_leaving_async_with_aborts_open_streams_and_refuses_new_work(
+        self, live: LiveSSEStream
+    ) -> None:
+        # The FastAPI lifespan pattern: the shared client closes while a
+        # request is still waiting on AWS.  Shutdown must not wait for that
+        # stream, and the waiting caller must get an error, not a clean end.
+        client = _client()
+        with Stubber(client._client) as stub:
+            stub.add_response("invoke_agent_runtime", _stream_response(live.body))
+            async with client:
+                stream = client.invoke("Hello", session_id=_SID)
+                live.send(sse_line("agent_start"))
+                await anext(stream)
+                waiting = asyncio.create_task(anext(stream))
+                assert await asyncio.to_thread(live.wait_until_client_reads)
+
+            with pytest.raises(ResponseStreamingError):
+                await asyncio.wait_for(waiting, _GUARD)
+            with pytest.raises(RuntimeError):
+                await anext(client.invoke("Hello", session_id=_SID))
+            await client.aclose()  # closing again is a no-op
+
 
 class TestAgentCoreClientStopSession:
     """AgentCoreClient.stop_session returns StopSessionResult or a typed error."""
@@ -172,6 +316,28 @@ class TestAgentCoreClientStopSession:
 
         assert isinstance(result, StopSessionResult)
         assert result.runtime_session_id == _SID
+        assert result.status_code == 200
+        client.close()
+
+    async def test_stop_session_runs_while_every_stream_slot_is_busy(
+        self, live: LiveSSEStream
+    ) -> None:
+        # Stopping a runaway session matters most when all streams are busy.
+        client = _client(max_concurrent_streams=1)
+        with Stubber(client._client) as stub:
+            stub.add_response("invoke_agent_runtime", _stream_response(live.body))
+            stub.add_response("stop_runtime_session", {"runtimeSessionId": _SID, "statusCode": 200})
+            stream = client.invoke("Hello", session_id=_SID)
+            live.send(sse_line("agent_start"))
+            await anext(stream)
+            waiting = asyncio.create_task(anext(stream))
+            assert await asyncio.to_thread(live.wait_until_client_reads)
+
+            result = await asyncio.wait_for(client.stop_session(_SID), _GUARD)
+            live.end()
+            with pytest.raises(StopAsyncIteration):
+                await waiting
+
         assert result.status_code == 200
         client.close()
 
