@@ -86,7 +86,7 @@ if __name__ == "__main__":
 models:
   default:
     provider: bedrock
-    model_id: openai.gpt-oss-20b-1:0
+    model_id: global.anthropic.claude-haiku-5-5
 
 agents:
   assistant:

@@ -123,7 +123,11 @@ client.repl(session_id="custom-session-id-at-least-33-chars")
 
 ## AgentCoreClient
 
-An async wrapper around boto3's `invoke_agent_runtime` for invoking deployed agents on AgentCore Runtime. Each `invoke()` call gets its own boto3 streaming response — no shared mutable state between sessions. A dedicated `ThreadPoolExecutor` (sized by `max_concurrent_streams`) offloads blocking I/O so the asyncio event loop is never starved.
+An async wrapper around boto3's `invoke_agent_runtime` for invoking deployed agents on AgentCore Runtime. Each `invoke()` call gets its own boto3 streaming response — no shared mutable state between sessions.
+
+boto3 is synchronous, so every blocking call runs in a private thread pool with one worker per `max_concurrent_streams` slot; the event loop only awaits results. Streaming follows the consumer: the client reads the next event from AWS only when you ask for it, so a slow consumer never makes the client buffer the response, and each event is yielded as soon as it arrives.
+
+Create one client per event loop and share it, for example in a FastAPI `lifespan` (see [Integration Patterns](#fastapi)).
 
 ### Usage
 
@@ -147,8 +151,8 @@ async for event in client.invoke(
 | `agent_runtime_arn` | `str` | required | Full ARN of the deployed agent runtime |
 | `region` | `str \| None` | boto3 default | AWS region override |
 | `session` | `boto3.Session \| None` | `None` | Pre-configured boto3 session |
-| `timeout` | `float \| None` | `None` | Socket read timeout in seconds |
-| `max_concurrent_streams` | `int` | `64` | Max concurrent `invoke()` calls |
+| `timeout` | `float \| None` | `None` | Socket read timeout in seconds: how long a stream may stay silent before it fails. `None` uses the botocore default (60 s) |
+| `max_concurrent_streams` | `int` | `64` | Max `invoke()` calls running at once (must be ≥ 1). Further calls wait, without blocking the event loop, for a free slot. `stop_session()` is not counted and never waits for a slot |
 | `retry` | `RetryConfig \| None` | `None` | Retry config for throttled and retryable-conflict (409) `invoke()` requests. `None` disables retry. Pass `RetryConfig()` for sensible defaults |
 
 ### Session ID Requirements
@@ -176,7 +180,9 @@ Returns an `AsyncGenerator[StreamEvent \| str, None]`.
 | `InvalidRequestError` | `ValidationException` — request failed service-side validation |
 | `SessionNotFoundError` | `ResourceNotFoundException` — e.g. the runtime ARN does not exist |
 | `AgentCoreClientError` | Any other service error |
-| `OSError` | Response stream failed mid-way; events yielded before the failure are still delivered |
+| `botocore.exceptions.ResponseStreamingError` | Response stream failed mid-way, or the client was closed while streaming; events yielded before the failure are still delivered |
+| `botocore.exceptions.ReadTimeoutError` | The stream stayed silent for longer than `timeout` |
+| `RuntimeError` | `invoke()` called after the client was closed |
 
 `ClientConnectionError` (server unreachable) is raised by `LocalClient` and `AsyncLocalClient` only.
 
@@ -202,7 +208,16 @@ async with AgentCoreClient(ARN, region="us-west-2") as client:
 # thread pool is shut down automatically
 ```
 
-You can also call `client.close()` manually when the client is no longer needed. In-flight streams finish before the pool is torn down.
+You can also close it manually when the client is no longer needed:
+
+```python
+await client.aclose()  # from async code; never blocks the event loop
+# client.close()       # from sync code
+```
+
+Closing aborts streams that are still open: their consumers get `ResponseStreamingError` instead of waiting for AWS. After closing, `invoke()` raises `RuntimeError`. Closing twice is safe.
+
+Exhaust each `invoke()` stream or close it (`await stream.aclose()`). A stream you abandon with `break` releases its slot only when Python garbage-collects it. If the consumer task is cancelled (for example a browser disconnects from a FastAPI `StreamingResponse`), the client stops waiting on AWS at once and frees the slot.
 
 ### Session lifecycle and the AgentCore Runtime control plane
 

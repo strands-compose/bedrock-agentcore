@@ -9,7 +9,11 @@
 models:
   default:
     provider: bedrock
-    model_id: openai.gpt-oss-20b-1:0
+    model_id: global.anthropic.claude-haiku-5-5
+    params:
+        additional_request_fields:
+            thinking: {type: adaptive, display: summarized}
+            output_config: {effort: high}
 
 agents:
   researcher:

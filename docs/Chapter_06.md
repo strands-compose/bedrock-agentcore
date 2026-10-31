@@ -40,7 +40,7 @@ AgentCore Runtime runs `main.py` as a script, so the `if __name__` block is what
 models:
   default:
     provider: bedrock
-    model_id: openai.gpt-oss-20b-1:0
+    model_id: global.anthropic.claude-haiku-5-5
 
 agents:
   assistant:
