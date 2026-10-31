@@ -36,12 +36,75 @@ from .utils import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Iterator
 
     import boto3
+    from botocore.response import StreamingBody
     from strands_compose import AnsiRenderer, StreamEvent
+    from urllib3 import HTTPResponse
 
 logger = logging.getLogger(__name__)
+
+# Upper bound for one socket read.  ``read1`` returns whatever has already
+# arrived, so this caps per-stream buffering without delaying small events.
+_READ_SIZE = 64 * 1024
+
+
+def _http_response(stream_body: StreamingBody) -> HTTPResponse:
+    """Return the urllib3 response that botocore wraps in ``stream_body``.
+
+    ``StreamingBody`` only offers ``read(n)``, which blocks until ``n`` bytes
+    arrive, and ``close()``, which waits for a read running in another
+    thread.  urllib3's ``read1()`` and ``shutdown()`` avoid both, but
+    botocore exposes the urllib3 response only as ``_raw_stream``.
+
+    Raises:
+        TypeError: botocore returned a body not backed by urllib3.
+    """
+    from urllib3 import HTTPResponse
+
+    raw = stream_body._raw_stream
+    if not isinstance(raw, HTTPResponse):
+        raise TypeError(f"expected a urllib3 response body, got {type(raw).__name__}")
+    return raw
+
+
+def _read1(response: HTTPResponse) -> bytes:
+    """Read the bytes that have arrived, waiting only if there are none.
+
+    urllib3 errors are re-raised as the botocore exceptions that
+    ``StreamingBody.read`` raises, so callers see the same types.
+    """
+    from botocore.exceptions import ReadTimeoutError, ResponseStreamingError
+    from urllib3.exceptions import ProtocolError
+    from urllib3.exceptions import ReadTimeoutError as URLLib3ReadTimeoutError
+
+    try:
+        return response.read1(_READ_SIZE)
+    except URLLib3ReadTimeoutError as exc:
+        raise ReadTimeoutError(endpoint_url=exc.url, error=exc) from exc
+    except ProtocolError as exc:
+        raise ResponseStreamingError(error=exc) from exc
+
+
+def _iter_lines(response: HTTPResponse) -> Iterator[bytes]:
+    """Yield each line of ``response`` as soon as its newline arrives.
+
+    ``StreamingBody.iter_lines`` reads fixed-size chunks, so an SSE event
+    that does not fill a chunk waits for the *next* event before it is
+    delivered.  Reading with ``read1`` never holds a complete line back.
+
+    Yields:
+        Lines without their line ending; blank lines are ``b""``.
+    """
+    pending = b""
+    while chunk := _read1(response):
+        lines = (pending + chunk).splitlines(keepends=True)
+        pending = b"" if lines[-1].endswith((b"\n", b"\r")) else lines.pop()
+        for line in lines:
+            yield line.rstrip(b"\r\n")
+    if pending:
+        yield pending
 
 
 @dataclass(frozen=True)
@@ -245,7 +308,7 @@ class AgentCoreClient:
 
         def _producer() -> None:
             try:
-                for line in stream_body.iter_lines():
+                for line in _iter_lines(_http_response(stream_body)):
                     loop.call_soon_threadsafe(queue.put_nowait, line)
             finally:
                 loop.call_soon_threadsafe(queue.put_nowait, None)
