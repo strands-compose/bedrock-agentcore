@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## v0.12.0 (2026-10-31)
+
+### Feat
+
+- **client**: stream AgentCoreClient responses on demand with a real concurrency cap
+
+### Fix
+
+- **client**: deliver each AgentCore stream event as soon as it arrives
+
 ## v0.11.0 (2026-10-21)
 
 ### Feat
