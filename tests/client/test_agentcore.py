@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import sys
 import threading
 from collections.abc import AsyncIterator, Iterator
 
@@ -33,6 +34,11 @@ _ARN = "arn:aws:bedrock-agentcore:us-east-1:0:runtime/test"
 _SID = "s" * 33
 # Deadlock guard only: every awaited step below completes in milliseconds.
 _GUARD = 2.0
+# Windows cannot wake a socket read blocked in another thread: an aborted
+# stream ends only at the socket read timeout there.
+_needs_read_abort = pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows cannot interrupt a blocked socket read"
+)
 
 
 def _client(
@@ -211,6 +217,7 @@ class TestAgentCoreClientConcurrency:
         assert [e.type for e in second_events] == ["token"]
         client.close()
 
+    @_needs_read_abort
     async def test_cancelled_consumer_frees_its_slot_and_connection_at_once(
         self, live: LiveSSEStream
     ) -> None:
@@ -278,6 +285,7 @@ class TestAgentCoreClientConcurrency:
 class TestAgentCoreClientLifecycle:
     """Closing the client aborts open streams and refuses new work."""
 
+    @_needs_read_abort
     async def test_leaving_async_with_aborts_open_streams_and_refuses_new_work(
         self, live: LiveSSEStream
     ) -> None:

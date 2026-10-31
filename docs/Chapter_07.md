@@ -219,6 +219,8 @@ Closing aborts streams that are still open: their consumers get `ResponseStreami
 
 Exhaust each `invoke()` stream or close it (`await stream.aclose()`). A stream you abandon with `break` releases its slot only when Python garbage-collects it. If the consumer task is cancelled (for example a browser disconnects from a FastAPI `StreamingResponse`), the client stops waiting on AWS at once and frees the slot.
 
+> **Windows:** a socket read blocked in another thread cannot be interrupted there. A stream that is closed or cancelled while it waits on a silent AWS response ends only when the read times out (`timeout`, 60 s by default) and holds its slot until then. Cancelling such a stream also blocks the event loop until that timeout.
+
 ### Session lifecycle and the AgentCore Runtime control plane
 
 When you call `client.invoke(...)`, the request travels through the following chain:

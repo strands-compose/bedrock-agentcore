@@ -128,6 +128,18 @@ class LiveSSEStream:
             decode_content=False,
         )
         self.body = StreamingBody(raw, None)
+        self._read_request()
+
+    def _read_request(self) -> None:
+        """Consume the request, as a real server does before it responds.
+
+        Closing a TCP socket with unread data sends a reset instead of a clean
+        close.  On Windows, where ``socketpair`` is TCP, that reset discards
+        data the client has received but not yet read.
+        """
+        received = b""
+        while not received.endswith(b"\r\n\r\n{}"):
+            received += self._server.recv(4096)
 
     def send(self, *lines: str) -> None:
         """Send one SSE event per line, each in its own HTTP chunk (as AgentCore does)."""
@@ -152,7 +164,7 @@ class LiveSSEStream:
         """Block until the client closes its end; ``False`` if it has not within ``timeout``."""
         self._server.settimeout(timeout)
         try:
-            while self._server.recv(4096):  # skip the request the client sent
+            while self._server.recv(4096):
                 pass
         except TimeoutError:
             return False
