@@ -13,6 +13,7 @@ uv run just <task>          # run one
 | File | Covers |
 |------|--------|
 | `check.just` | format, lint, type, security, test gates |
+| `verify.just` | the same gates without changing any file (CI runs this) |
 | `format.just` | auto-format source, tests, examples, and markdown code blocks |
 | `test.just` | pytest with the coverage gate; mutation testing |
 | `clean.just` | build artifacts and tool caches |
