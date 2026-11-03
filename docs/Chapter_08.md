@@ -70,6 +70,22 @@ The session idle timeout is controlled by `--idle-timeout` when registering the 
 
 ---
 
+## Idle Connections on AWS
+
+`AgentCoreClient` reuses its HTTPS connections. On AWS, NAT gateways, VPC endpoints and Network Load Balancers forget a TCP connection after **350 s** without traffic ([AWS blog](https://aws.amazon.com/blogs/networking-and-content-delivery/implementing-long-running-tcp-connections-within-vpc-networking/)). When that happens, the next call sends its request on a connection nobody answers. It waits for the read timeout (60 s by default), then botocore retries on a new connection.
+
+The client turns on TCP keepalive, but the operating system decides when to send the first probe. On Linux that is `net.ipv4.tcp_keepalive_time`, 7200 s by default, far beyond 350 s. botocore has no setting for it ([boto/botocore#2916](https://github.com/boto/botocore/issues/2916)), so set it on the host running the client to a value below 350, for example `60`:
+
+| Where the client runs | How to set it |
+|---|---|
+| ECS (on Fargate, platform version 1.4.0 or later) | Task definition, in the container definition: `"systemControls": [{ "namespace": "net.ipv4.tcp_keepalive_time", "value": "60" }]` |
+| Docker / Docker Compose | `docker run --sysctl net.ipv4.tcp_keepalive_time=60`, or `sysctls:` in the Compose service |
+| EC2 or another Linux host | `sysctl -w net.ipv4.tcp_keepalive_time=60`, persisted in `/etc/sysctl.d/` |
+
+Only sockets with keepalive turned on are affected, so the change is safe for the rest of the container. To check it inside a running task, `cat /proc/sys/net/ipv4/tcp_keepalive_time` should print `60`.
+
+---
+
 ## Multi-File Configs
 
 Split large configs across multiple YAML files:
