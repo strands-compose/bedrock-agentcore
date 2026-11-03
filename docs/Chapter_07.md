@@ -155,6 +155,8 @@ async for event in client.invoke(
 | `max_concurrent_streams` | `int` | `64` | Max `invoke()` calls running at once (must be ≥ 1). Further calls wait, without blocking the event loop, for a free slot. `stop_session()` is not counted and never waits for a slot |
 | `retry` | `RetryConfig \| None` | `None` | Retry config for throttled and retryable-conflict (409) `invoke()` requests. `None` disables retry. Pass `RetryConfig()` for sensible defaults |
 
+The client always turns on TCP keepalive. When it runs on AWS (for example on ECS or EC2), also lower the host's keepalive time, or the first call after a long idle period can hang for a minute. See [Idle Connections on AWS](Chapter_08.md#idle-connections-on-aws).
+
 ### Session ID Requirements
 
 AgentCore requires session IDs of 33–256 characters. The `AgentCoreClient` enforces both bounds and raises `ValueError` for IDs outside this range. When using the REPL without specifying a session ID, the fixed default `"default-session-strands-compose-agentcore"` is used.

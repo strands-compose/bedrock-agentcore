@@ -91,6 +91,11 @@ class AgentCoreClient:
         and a **dedicated** ``ThreadPoolExecutor`` ensures the event loop's
         default executor is never starved by long-running SSE reads.
 
+        TCP keepalive is always on, so idle pooled connections survive NAT
+        gateways and VPC endpoints.  The host must send the first probe
+        before their 350 s idle limit (Linux ``net.ipv4.tcp_keepalive_time``
+        defaults to 7200 s).
+
         Args:
             agent_runtime_arn: Full ARN of the deployed agent runtime.
             region: AWS region override.  Falls back to the boto3
@@ -127,13 +132,20 @@ class AgentCoreClient:
                 "a default region in your boto3 session / environment."
             )
 
-        client_kwargs: dict[str, Any] = {"region_name": resolved_region}
+        from botocore.config import Config
+
+        # NAT gateways and VPC endpoints forget a TCP connection after 350 s
+        # idle.  Without keepalive, the next request on that pooled connection
+        # gets no answer and waits for the full read timeout before botocore
+        # retries.  The OS setting tcp_keepalive_time decides when the first
+        # probe goes out.
+        options: dict[str, Any] = {"tcp_keepalive": True}
         if timeout is not None:
-            from botocore.config import Config
+            options["read_timeout"] = int(timeout)
 
-            client_kwargs["config"] = Config(read_timeout=int(timeout))
-
-        self._client = self._session.client("bedrock-agentcore", **client_kwargs)
+        self._client = self._session.client(
+            "bedrock-agentcore", region_name=resolved_region, config=Config(**options)
+        )
 
     # -- Public API ----------------------------------------------------------
 

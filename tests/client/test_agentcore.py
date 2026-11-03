@@ -282,6 +282,21 @@ class TestAgentCoreClientConcurrency:
         client.close()
 
 
+class TestAgentCoreClientConnection:
+    """The boto3 client keeps idle pooled connections alive."""
+
+    @pytest.mark.parametrize(("timeout", "read_timeout"), [(None, 60), (120.0, 120)])
+    def test_client_enables_tcp_keepalive_with_any_timeout(
+        self, timeout: float | None, read_timeout: int
+    ) -> None:
+        client = AgentCoreClient(_ARN, region="us-east-1", timeout=timeout)
+
+        config = client._client.meta.config
+        assert config.tcp_keepalive is True
+        assert config.read_timeout == read_timeout
+        client.close()
+
+
 class TestAgentCoreClientLifecycle:
     """Closing the client aborts open streams and refuses new work."""
 
